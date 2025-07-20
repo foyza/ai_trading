@@ -28,7 +28,7 @@ def get_keyboard():
     kb.adjust(1)
     return kb.as_markup()
 
-@dp.message(F.text, commands="start")
+@dp.message(F.text == "/start")
 async def start(message: types.Message):
     user_id = message.from_user.id
     user_settings[user_id] = {"asset": "BTC-USD", "schedule": {"days": list(range(7)), "hours": list(range(24))}}
