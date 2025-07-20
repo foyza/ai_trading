@@ -127,7 +127,9 @@ async def set_hours_cmd(msg: types.Message):
     if len(parts) != 4:
         await msg.answer("Формат: /sethours ASSET START END")
         return
-asset, start, end = parts[1], int(parts[2]), int(parts[3])
+
+    asset, start, end = parts[1], int(parts[2]), int(parts[3])
+
     if asset not in TRADABLE_ASSETS:
         await msg.answer("⛔️ Недопустимый актив.")
         return
