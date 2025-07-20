@@ -116,8 +116,8 @@ def gen_signal(ticker: str):
     entry = price
     tp_pct = 2
     sl_pct = 1.5
-tp_price = round(entry * (1 + tp_pct/100 if direction=="Buy" else 1 - tp_pct/100), 2)
-    sl_price = round(entry * (1 - sl_pct/100 if direction=="Buy" else 1 + sl_pct/100), 2)
+tp_price = round(entry * (1 + tp_pct/100 if direction == "Buy" else 1 - tp_pct/100), 2)
+    sl_price = round(entry * (1 - sl_pct/100 if direction == "Buy" else 1 + sl_pct/100), 2)
 
     return {
         "status": "ok", "direction": direction,
