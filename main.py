@@ -63,7 +63,7 @@ def asset_keyboard() -> InlineKeyboardMarkup:
 # /start
 @dp.message(F.text == "/start")
 async def start(message: Message):
-    await message.answer("Привет! Выбери актив для сигнала:", reply_markup=asset_keyboard())
+    await message.answer("Пора выбраться из матрицы!", reply_markup=asset_keyboard())
 
 # Выбор актива
 @dp.callback_query(F.data.startswith("asset:"))
