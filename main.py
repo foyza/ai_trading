@@ -32,8 +32,11 @@ keyboard = ReplyKeyboardMarkup(
 async def fetch_data(ticker):
     try:
         data = yf.download(ticker, period="1d", interval="1m")
+        if data.empty or len(data) < 2:
+            return None
         return data
     except Exception as e:
+        print(f"Ошибка загрузки данных: {e}")
         return None
 
 def generate_signal(data):
