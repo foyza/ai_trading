@@ -114,7 +114,9 @@ async def handle_message(message: types.Message):
         data = await fetch_data(assets[asset])
         signal = generate_signal(data)
 
-        
+        if not signal:
+            await message.answer("⚠️ Недостаточно данных.")
+            return
 
         accuracy = signal["accuracy"]
         if accuracy < 60:
