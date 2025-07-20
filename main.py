@@ -1,39 +1,43 @@
 import asyncio
 import random
+import logging
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
-from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import yfinance as yf
 from datetime import datetime
 import pytz
 
 TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(token=TOKEN, default=types.DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
+logging.basicConfig(level=logging.INFO)
 
 ASSETS = ["BTCUSD", "XAUUSD", "USTECH100"]
-user_data = {}  # {user_id: {"asset": ..., "schedule": [(start, end), ...]}}
+user_assets = {}
+user_schedule = {}  # {user_id: {"start": 0, "end": 23}}
 
-# --- Получаем цену из Yahoo Finance ---
 def get_market_price(asset):
     symbol_map = {
         "BTCUSD": "BTC-USD",
         "XAUUSD": "GC=F",
-        "USTECH100": "^NDX",
+        "USTECH100": "^NDX"
     }
     ticker = symbol_map.get(asset)
-    if not ticker:
+    try:
+        data = yf.download(ticker, period="1d", interval="5m", progress=False)
+        if data.empty:
+            print(f"[{asset}] No data received from yfinance.")
+            return None
+        return float(data["Close"].iloc[-1])
+    except Exception as e:
+        print(f"Failed to get price for {ticker}: {e}")
         return None
-    data = yf.Ticker(ticker).history(period="1d", interval="1m")
-    if data.empty:
-        return None
-    return float(data["Close"].iloc[-1])
 
-# --- Генерация сигнала ---
 def generate_signal(asset):
     price = get_market_price(asset)
-    if price is None:
+    if not price:
         return None
     direction = random.choice(["Buy", "Sell"])
     accuracy = round(random.uniform(60, 95), 2)
@@ -48,116 +52,85 @@ def generate_signal(asset):
         "accuracy": accuracy,
     }
 
-# --- Формат сигнала ---
 def format_signal(signal, auto=False):
-    prefix = "🔔 <b>Автосигнал</b>" if auto else "🔔 <b>Сигнал</b>"
+    prefix = "🔔 <b>Автосигнал</b>" if auto else "📡 <b>Сигнал</b>"
     return (
-        f"{prefix} по <b>{signal['asset']}</b> ({signal['direction']})\n"
-        f"🎯 Вход: <b>{signal['entry']}</b>\n"
-        f"📈 TP: <b>{signal['tp']}</b> (+2%)\n"
-        f"📉 SL: <b>{signal['sl']}</b> (-1.5%)\n"
-        f"📊 Точность прогноза: <b>{signal['accuracy']}%</b>"
+        f"{prefix} по <b>{signal['asset']}</b>\n"
+        f"📍 Вход: <b>{signal['entry']}</b>\n"
+        f"🎯 TP: <b>{signal['tp']}</b> (+2%)\n"
+        f"🛡️ SL: <b>{signal['sl']}</b> (-1.5%)\n"
+        f"📊 Точность: <b>{signal['accuracy']}%</b>\n"
+        f"📈 Направление: <b>{signal['direction']}</b>"
     )
 
-# --- Проверка расписания пользователя ---
-def is_within_schedule(user_id):
-    schedule = user_data.get(user_id, {}).get("schedule")
-    if not schedule:
-        return True  # По умолчанию всегда
-    now = datetime.now(pytz.timezone("Asia/Tashkent")).time()
-    for start, end in schedule:
-        if start <= now <= end:
-            return True
-    return False
-
-# --- Команды и кнопки ---
-@dp.message(F.text == "/start")
-async def start(message: Message):
-    user_data[message.from_user.id] = {
-        "asset": "BTCUSD",
-        "schedule": [],
-    }
-    await message.answer("Пора выбраться из матрицы!", reply_markup=asset_keyboard())
-
-@dp.message(F.text == "/change_asset")
-async def change_asset(message: Message):
-    await message.answer("Выберите актив:", reply_markup=asset_keyboard())
-
-@dp.message(F.text == "/change_schedule")
-async def change_schedule(message: Message):
-    await message.answer("Выберите расписание:", reply_markup=schedule_keyboard())
-
-# --- Кнопки активов ---
 def asset_keyboard():
     kb = InlineKeyboardBuilder()
     for asset in ASSETS:
         kb.button(text=asset, callback_data=f"asset:{asset}")
     return kb.as_markup()
 
-# --- Кнопки расписания ---
 def schedule_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Круглосуточно", callback_data="schedule:all"),
-            InlineKeyboardButton(text="9:00–18:00", callback_data="schedule:9_18"),
-        ],
-        [
-            InlineKeyboardButton(text="10:00–22:00", callback_data="schedule:10_22"),
-            InlineKeyboardButton(text="Выходные отключены", callback_data="schedule:weekdays"),
-        ]
-    ])
+    kb = InlineKeyboardBuilder()
+    for hour in range(0, 24, 3):
+        kb.button(text=f"{hour}:00", callback_data=f"start:{hour}")
+    return kb.as_markup()
 
-# --- Обработка выбора актива ---
+def end_hour_keyboard(start_hour):
+    kb = InlineKeyboardBuilder()
+    for hour in range(start_hour + 1, 25):
+        kb.button(text=f"{hour}:00", callback_data=f"end:{hour}")
+    return kb.as_markup()
+
+@dp.message(F.text == "/start")
+async def start(message: Message):
+    await message.answer("Пора выбраться из матрицы!", reply_markup=asset_keyboard())
+
 @dp.callback_query(F.data.startswith("asset:"))
-async def asset_chosen(callback: CallbackQuery):
+async def set_asset(callback: CallbackQuery):
     asset = callback.data.split(":")[1]
-    user_data.setdefault(callback.from_user.id, {})["asset"] = asset
+    user_assets[callback.from_user.id] = asset
+    await callback.message.answer(f"✅ Актив установлен: <b>{asset}</b>\n\nТеперь выберите часы работы сигналов:", reply_markup=schedule_keyboard())
+
+@dp.callback_query(F.data.startswith("start:"))
+async def set_start(callback: CallbackQuery):
+    start_hour = int(callback.data.split(":")[1])
+    user_schedule[callback.from_user.id] = {"start": start_hour}
+    await callback.message.answer(f"🕐 Начало: {start_hour}:00\nТеперь выберите конец:", reply_markup=end_hour_keyboard(start_hour))
+
+@dp.callback_query(F.data.startswith("end:"))
+async def set_end(callback: CallbackQuery):
+    end_hour = int(callback.data.split(":")[1])
+    user_id = callback.from_user.id
+    if user_id in user_schedule:
+        user_schedule[user_id]["end"] = end_hour
+        await callback.message.answer(f"🕒 Сигналы будут приходить с {user_schedule[user_id]['start']}:00 до {end_hour}:00")
+    else:
+        await callback.message.answer("❗ Сначала выберите начало диапазона.")
+
+@dp.message(F.text == "/signal")
+async def manual_signal(message: Message):
+    user_id = message.from_user.id
+    asset = user_assets.get(user_id, "BTCUSD")
     signal = generate_signal(asset)
     if signal and signal["accuracy"] >= 65:
-        await callback.message.answer(format_signal(signal))
+        await message.answer(format_signal(signal))
     else:
-        await callback.message.answer("❌ Недостаточная точность или ошибка данных.")
+        await message.answer("❌ Недостаточная точность сигнала или нет данных.")
 
-# --- Обработка выбора расписания ---
-@dp.callback_query(F.data.startswith("schedule:"))
-async def schedule_chosen(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    key = callback.data.split(":")[1]
-    if key == "all":
-        schedule = []
-    elif key == "9_18":
-        schedule = [(datetime.strptime("09:00", "%H:%M").time(),
-                     datetime.strptime("18:00", "%H:%M").time())]
-    elif key == "10_22":
-        schedule = [(datetime.strptime("10:00", "%H:%M").time(),
-                     datetime.strptime("22:00", "%H:%M").time())]
-    elif key == "weekdays":
-        # Можно позже учесть дни недели
-        schedule = [(datetime.strptime("09:00", "%H:%M").time(),
-                     datetime.strptime("18:00", "%H:%M").time())]
-    else:
-        schedule = []
-    user_data.setdefault(user_id, {})["schedule"] = schedule
-    await callback.message.answer("✅ Расписание обновлено.")
-
-# --- Цикл авто сигналов ---
 async def auto_signal_loop():
     while True:
-        for user_id, data in user_data.items():
-            asset = data.get("asset", "BTCUSD")
-            if is_within_schedule(user_id):
+        now = datetime.now(pytz.timezone("Asia/Tashkent")).hour
+        for user_id, asset in user_assets.items():
+            sched = user_schedule.get(user_id, {"start": 0, "end": 24})
+            if sched["start"] <= now < sched["end"]:
                 signal = generate_signal(asset)
                 if signal and signal["accuracy"] >= 70:
-                    try:
-                        await bot.send_message(chat_id=user_id, text=format_signal(signal, auto=True))
-                    except:
-                        pass
+                    await bot.send_message(user_id, format_signal(signal, auto=True))
         await asyncio.sleep(60)
 
-# --- Старт бота ---
 async def main():
     asyncio.create_task(auto_signal_loop())
     await dp.start_polling(bot)
 
-if __name__ == "__main__":
+if name == "__main__":
     asyncio.run(main())
