@@ -1,130 +1,97 @@
 import asyncio
-import logging
 import random
-from aiogram import Bot, Dispatcher, F
-from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import Command
+from aiogram.enums import ParseMode
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+import yfinance as yf
+from binance import Client
 
-API_TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
+TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
+BINANCE_API_KEY = "your_api_key"
+BINANCE_API_SECRET = "your_api_secret"
 
-logging.basicConfig(level=logging.INFO)
-
-bot = Bot(
-    token=API_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
+bot = Bot(token=TOKEN, default=types.DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
+
+client = Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
+
+user_assets = {}
 
 ASSETS = ["BTCUSD", "XAUUSD", "USTECH100"]
 
+# Получаем цену из Binance или Yahoo
+def get_market_price(asset):
+    if asset == "BTCUSD":
+        ticker = client.get_symbol_ticker(symbol="BTCUSDT")
+        return float(ticker["price"])
+    elif asset == "XAUUSD":
+        ticker = client.get_symbol_ticker(symbol="XAUUSDT")
+        return float(ticker["price"])
+    elif asset == "USTECH100":
+        data = yf.Ticker("^NDX").history(period="1d")
+        return float(data["Close"][-1])
+    return None
 
-def generate_prediction(asset: str):
-    # Здесь стоит подключать ML-модель или API
-    current_price = random.uniform(1000, 60000)
+# Генерация сигнала с псевдопрогнозом
+def generate_signal(asset):
+    price = get_market_price(asset)
     direction = random.choice(["Buy", "Sell"])
     accuracy = round(random.uniform(60, 95), 2)
-
-    if direction == "Buy":
-        tp = current_price * 1.02  # +2%
-        sl = current_price * 0.985  # -1.5%
-    else:
-        tp = current_price * 0.98  # -2%
-        sl = current_price * 1.015  # +1.5%
-
+    tp = price * (1 + 0.02) if direction == "Buy" else price * (1 - 0.02)
+    sl = price * (1 - 0.015) if direction == "Buy" else price * (1 + 0.015)
     return {
         "asset": asset,
-        "price": round(current_price, 2),
         "direction": direction,
+        "entry": round(price, 2),
         "tp": round(tp, 2),
         "sl": round(sl, 2),
-        "accuracy": accuracy
+        "accuracy": accuracy,
     }
 
-
-@dp.message(Command("start"))
-async def start_handler(msg: Message):
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Получить сигнал", callback_data="get_signal")],
-        [InlineKeyboardButton(text="📉 Выбрать актив", callback_data="choose_asset")]
-    ])
-    await msg.answer("👋 Добро пожаловать в AI Trading Bot!\nВыберите действие:", reply_markup=keyboard)
-
-
-@dp.callback_query(F.data == "choose_asset")
-async def choose_asset(callback_query):
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=asset, callback_data=f"asset_{asset}")]
-            for asset in ASSETS
-        ]
+# Сообщение сигнала
+def format_signal(signal, auto=False):
+    prefix = "🔔 <b>Автосигнал</b>" if auto else "🔔 <b>Сигнал</b>"
+    return (
+        f"{prefix} по <b>{signal['asset']}</b> ({signal['direction']})\n"
+        f"🎯 Вход: <b>{signal['entry']}</b>\n"
+        f"📈 TP: <b>{signal['tp']}</b> (+2%)\n"
+        f"📉 SL: <b>{signal['sl']}</b> (-1.5%)\n"
+        f"📊 Точность прогноза: <b>{signal['accuracy']}%</b>"
     )
-    await callback_query.message.answer("💱 Выберите актив:", reply_markup=keyboard)
 
+# Кнопки выбора актива
+def asset_keyboard():
+    kb = InlineKeyboardBuilder()
+    for asset in ASSETS:
+        kb.button(text=asset, callback_data=f"asset:{asset}")
+    return kb.as_markup()
 
-@dp.callback_query(F.data.startswith("asset_"))
-async def asset_selected(callback_query):
-    asset = callback_query.data.split("_")[1]
-    prediction = generate_prediction(asset)
+@dp.message(F.text == "/start")
+async def start(message: Message):
+    await message.answer("Пора выбраться из матрицы!", reply_markup=asset_keyboard())
 
-    if prediction["accuracy"] < 65:
-        await callback_query.message.answer(
-            f"📉 Точность прогноза по {asset} слишком низкая: {prediction['accuracy']}%.\nПовторите позже."
-        )
-        return
+@dp.callback_query(F.data.startswith("asset:"))
+async def asset_chosen(callback: types.CallbackQuery):
+    asset = callback.data.split(":")[1]
+    user_assets[callback.from_user.id] = asset
+    signal = generate_signal(asset)
+    if signal["accuracy"] >= 65:
+        await callback.message.answer(format_signal(signal))
+    else:
+        await callback.message.answer(f"❌ Недостаточная точность ({signal['accuracy']}%). Сигнал не отправлен.")
 
-    text = (
-        f"🔔 Сигнал по {asset} ({prediction['direction']})\n"
-        f"🎯 Вход: {prediction['price']}\n"
-        f"📈 TP: {prediction['tp']} (+2%)\n"
-        f"📉 SL: {prediction['sl']} (-1.5%)\n"
-        f"📊 Точность прогноза: {prediction['accuracy']}%"
-    )
-    await callback_query.message.answer(text)
-
-
-@dp.callback_query(F.data == "get_signal")
-async def manual_signal(callback_query):
-    # Выбираем случайный актив
-    asset = random.choice(ASSETS)
-    prediction = generate_prediction(asset)
-
-    if prediction["accuracy"] < 65:
-        await callback_query.message.answer(
-            f"📉 Точность прогноза по {asset} слишком низкая: {prediction['accuracy']}%.\nПовторите позже."
-        )
-        return
-
-    text = (
-        f"🔔 Сигнал по {asset} ({prediction['direction']})\n"
-        f"🎯 Вход: {prediction['price']}\n"
-        f"📈 TP: {prediction['tp']} (+2%)\n"
-        f"📉 SL: {prediction['sl']} (-1.5%)\n"
-        f"📊 Точность прогноза: {prediction['accuracy']}%"
-    )
-    await callback_query.message.answer(text)
-
-
-async def auto_send_signals():
+# Автоотправка при >70% точности
+async def auto_signal():
     while True:
         for asset in ASSETS:
-            prediction = generate_prediction(asset)
-            if prediction["accuracy"] >= 70:
-                text = (
-                    f"🔔 <b>Автосигнал</b> по {asset} ({prediction['direction']})\n"
-                    f"🎯 Вход: {prediction['price']}\n"
-                    f"📈 TP: {prediction['tp']} (+2%)\n"
-                    f"📉 SL: {prediction['sl']} (-1.5%)\n"
-                    f"📊 Точность прогноза: {prediction['accuracy']}%"
-                )
-                
-                await bot.send_message(chat_id="813631865", text=text)
-        await asyncio.sleep(60)  # Проверка каждую минуту
-
+            signal = generate_signal(asset)
+            if signal["accuracy"] >= 70:
+                await bot.send_message(chat_id="@foyzas_bot", text=format_signal(signal, auto=True))
+        await asyncio.sleep(60)
 
 async def main():
-    asyncio.create_task(auto_send_signals())
+    asyncio.create_task(auto_signal())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
