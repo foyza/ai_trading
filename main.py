@@ -114,9 +114,7 @@ async def handle_message(message: types.Message):
         data = await fetch_data(assets[asset])
         signal = generate_signal(data)
 
-        if not signal:
-            await message.answer("⚠️ Недостаточно данных.")
-            return
+        
 
         accuracy = signal["accuracy"]
         if accuracy < 60:
@@ -153,7 +151,7 @@ async def monitor_signals():
             if signal and signal["accuracy"] >= 70:
                 await send_signal(user_id, asset, signal)
 
-        await asyncio.sleep(60)  # Проверка каждую минуту
+        await asyncio.sleep(30)  # Проверка каждую минуту
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
