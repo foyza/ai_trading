@@ -1,96 +1,174 @@
 import asyncio
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import (
+    Message, CallbackQuery,
+    InlineKeyboardButton, InlineKeyboardMarkup
+)
 from aiogram.enums import ParseMode
+from datetime import datetime
 from aiogram.fsm.storage.memory import MemoryStorage
 import yfinance as yf
 import numpy as np
 import random
 
-# ==== Настройки ====
 TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
-ASSETS = {
-    "BTCUSD": "BTC-USD",
-    "XAUUSD": "GC=F",
-    "USTECH100": "^NDX"
-}
-user_asset = {}
-
-# ==== Инициализация ====
 bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
 
-# ==== Клавиатура ====
-def asset_keyboard():
+# Доступные активы
+ASSETS = {"BTCUSD": "BTC-USD", "XAUUSD": "XAUUSD=X", "USTECH100": "^NDX"}
+user_settings = {}  # Хранит настройки для каждого пользователя
+
+# --- Кнопки ---
+def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="BTCUSD", callback_data="set_asset:BTCUSD")],
-        [InlineKeyboardButton(text="XAUUSD", callback_data="set_asset:XAUUSD")],
-        [InlineKeyboardButton(text="USTECH100", callback_data="set_asset:USTECH100")],
-        [InlineKeyboardButton(text="📩 Запросить сигнал", callback_data="get_signal")]
+        [InlineKeyboardButton("⚙️ Выбрать актив", callback_data="set_asset")],
+        [InlineKeyboardButton("🕒 Настроить расписание", callback_data="set_schedule")],
+        [InlineKeyboardButton("📩 Запросить сигнал", callback_data="manual_signal")]
     ])
 
-# ==== Команды ====
+def asset_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(a, callback_data=f"asset:{a}") for a in ASSETS.keys()]
+    ])
+
+def days_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton("Будни", callback_data="days:weekdays"),
+         InlineKeyboardButton("Выходные", callback_data="days:weekends")],
+        [InlineKeyboardButton("Круглосуточно", callback_data="days:all")]
+    ])
+
+def hours_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(f"{h}:00", callback_data=f"hours:{h}") for h in range(0, 24, 6)],
+        [InlineKeyboardButton("Подтвердить", callback_data="hours:confirm")]
+    ])
+
+# --- Команды ---
 @dp.message(F.text == "/start")
-async def start(message: Message):
-    user_asset[message.chat.id] = "BTCUSD"
-    await message.answer("Пора выбраться из матрицы.\nВыбери актив:", reply_markup=asset_keyboard())
+async def cmd_start(msg: Message):
+    user_settings[msg.from_user.id] = {
+        "asset": "BTCUSD",
+        "days": "all",
+        "hours": list(range(24))
+    }
+    await msg.answer("Пора выбраться из матрицы", reply_markup=main_kb())
 
-@dp.callback_query(F.data.startswith("set_asset"))
-async def set_asset(call: CallbackQuery):
-    asset = call.data.split(":")[1]
-    user_asset[call.message.chat.id] = asset
-    await call.message.answer(f"✅ Актив выбран: <b>{asset}</b>")
+# --- Обработчики кнопок ---
+@dp.callback_query(F.data == "set_asset")
+async def cb_set_asset(c: CallbackQuery):
+    await c.message.edit_text("Выберите актив:", reply_markup=asset_kb())
 
-@dp.callback_query(F.data == "get_signal")
-async def get_signal(call: CallbackQuery):
-    asset = user_asset.get(call.message.chat.id, "BTCUSD")
-    ticker = ASSETS[asset]
-    signal = await generate_signal(ticker)
-    await call.message.answer(signal)
+@dp.callback_query(F.data.startswith("asset:"))
+async def cb_asset(c: CallbackQuery):
+    a = c.data.split(":")[1]
+    user_settings[c.from_user.id]["asset"] = a
+    await c.message.edit_text(f"Актив установлен: <b>{a}</b>", reply_markup=main_kb())
 
-# ==== Генерация сигнала ====
-async def generate_signal(ticker: str) -> str:
-    try:
-        df = yf.download(ticker, period="7d", interval="1h", progress=False)
-        if df.empty:
-            return "⚠️ Нет данных по активу."
+@dp.callback_query(F.data == "set_schedule")
+async def cb_set_schedule(c: CallbackQuery):
+    await c.message.edit_text("Выберите дни:", reply_markup=days_kb())
 
-        last_price = df["Close"].iloc[-1]
-        direction = random.choice(["Buy", "Sell"])
-        accuracy = round(random.uniform(50, 90), 2)
+@dp.callback_query(F.data.startswith("days:"))
+async def cb_days(c: CallbackQuery):
+    arg = c.data.split(":")[1]
+    s = user_settings[c.from_user.id]
+    s["days"] = arg
+    if arg == "all":
+        s["hours"] = list(range(24))
+        await c.message.edit_text("Расписание: круглосуточно", reply_markup=main_kb())
+    else:
+        s["hours_temp"] = []
+        await c.message.edit_text("Выберите часы (каждые 6 ч):", reply_markup=hours_kb())
 
-        if accuracy < 60:
-            return f"<b>Точность прогноза: {accuracy}%</b>\n⚠️ Риск велик, не время торговли."
-
-        if accuracy < 65:
-            return f"<b>Точность прогноза: {accuracy}%</b>\n⚠️ Точность слишком низкая для ручного сигнала."
-
-        # Вычисляем TP/SL
-        if direction == "Buy":
-            tp_percent = 3
-            sl_percent = 1.5
-            tp_price = last_price * (1 + tp_percent / 100)
-            sl_price = last_price * (1 - sl_percent / 100)
+@dp.callback_query(F.data.startswith("hours:"))
+async def cb_hours(c: CallbackQuery):
+    arg = c.data.split(":")[1]
+    uid = c.from_user.id
+    s = user_settings[uid]
+    if arg == "confirm":
+        s["hours"] = s.pop("hours_temp", [])
+        await c.message.edit_text("Расписание сохранено", reply_markup=main_kb())
+    else:
+        h = int(arg)
+        temp = s.setdefault("hours_temp", [])
+        if h in temp:
+            temp.remove(h)
         else:
-            tp_percent = 2.5
-            sl_percent = 1.2
-            tp_price = last_price * (1 - tp_percent / 100)
-            sl_price = last_price * (1 + sl_percent / 100)
+            temp.append(h)
+        await c.answer(f"Выбрано: {sorted(temp)}", show_alert=False)
 
-        return (
-            f"<b>Сигнал по {ticker}</b>\n"
-            f"Направление: <b>{direction}</b>\n"
-            f"Точность прогноза: <b>{accuracy}%</b>\n"
-            f"Цена входа: <b>{round(last_price, 2)}</b>\n"
-            f"🎯 Тейк-Профит: <b>{tp_percent}%</b> → {round(tp_price, 2)}\n"
-            f"🛑 Стоп-Лосс: <b>{sl_percent}%</b> → {round(sl_price, 2)}"
-        )
+# --- Генерация сигнала ---
+def gen_signal(ticker: str):
+    try:
+        df = yf.download(ticker, period="1d", interval="1m", progress=False)
+        if df.empty:
+            return None
+        price = float(df["Close"].iloc[-1])
+    except:
+        return None
 
-    except Exception as e:
-        return f"❌ Ошибка при получении сигнала: {str(e)}"
+    acc = round(random.uniform(50, 100), 2)
+    if acc < 60:
+        return {"status": "low", "accuracy": acc}
+    direction = random.choice(["Buy", "Sell"])
+    entry = price
+    tp_pct = 2
+    sl_pct = 1.5
+tp_price = round(entry * (1 + tp_pct/100 if direction=="Buy" else 1 - tp_pct/100), 2)
+    sl_price = round(entry * (1 - sl_pct/100 if direction=="Buy" else 1 + sl_pct/100), 2)
 
-# ==== Запуск ====
+    return {
+        "status": "ok", "direction": direction,
+        "entry": round(entry,2),
+        "tp_pct": tp_pct, "tp_price": tp_price,
+        "sl_pct": sl_pct, "sl_price": sl_price,
+        "accuracy": acc
+    }
+
+# --- Ручной сигнал ---
+@dp.callback_query(F.data == "manual_signal")
+async def cb_manual(c: CallbackQuery):
+    cfg = user_settings[c.from_user.id]
+    sig = gen_signal(ASSETS[cfg["asset"]])
+    if not sig or sig["status"]=="low":
+        txt = f"⚠️ Точность: {sig['accuracy'] if sig else '?'}% — риск велик, не время торговли"
+    elif sig["accuracy"] < 65:
+        txt = f"⛔️ Точность: {sig['accuracy']}% слишком низка для ручного сигнала"
+    else:
+        txt = (f"📊 <b>{cfg['asset']}</b>\n"
+               f"🔁 {sig['direction']}\n"
+               f"🎯 Вход: {sig['entry']}\n"
+               f"📈 TP +{sig['tp_pct']}% → {sig['tp_price']}\n"
+               f"🛑 SL −{sig['sl_pct']}% → {sig['sl_price']}\n"
+               f"📊 Точность: {sig['accuracy']}%")
+    await c.message.answer(txt, reply_markup=main_kb())
+
+# --- Автосигнал каждая минута ---
+async def auto_loop():
+    while True:
+        now = datetime.now()
+        for uid, s in user_settings.items():
+            weekday = now.weekday()
+            if s["days"]=="weekdays" and weekday>=5 or s["days"]=="weekends" and weekday<5:
+                continue
+            if now.hour not in s["hours"]:
+                continue
+            sig = gen_signal(ASSETS[s["asset"]])
+            if sig and sig["status"]=="ok" and sig["accuracy"]>=70:
+                txt = (f"🤖 Автосигнал по <b>{s['asset']}</b>\n"
+                       f"🔁 {sig['direction']}\n"
+                       f"🎯 Вход: {sig['entry']}\n"
+                       f"📈 TP +{sig['tp_pct']}% → {sig['tp_price']}\n"
+                       f"🛑 SL −{sig['sl_pct']}% → {sig['sl_price']}\n"
+                       f"📊 Точность: {sig['accuracy']}%")
+                await bot.send_message(uid, txt, reply_markup=main_kb())
+        await asyncio.sleep(60)
+
+# --- Запуск ---
 async def main():
+    asyncio.create_task(auto_loop())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
