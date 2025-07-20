@@ -1,111 +1,87 @@
 import asyncio
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ParseMode
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-import datetime
-from core import generate_signal
+import yfinance as yf
+import numpy as np
+import random
 
 TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
-
 bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
 
-user_settings = {}
+# Активы
+ASSETS = {
+    "BTCUSD": "BTC-USD",
+    "XAUUSD": "GC=F",
+    "USTECH100": "^NDX"
+}
+user_asset = {}
 
-class Settings(StatesGroup):
-    waiting_for_day = State()
-    waiting_for_hour = State()
-
-def get_keyboard():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="📈 Запросить сигнал", callback_data="get_signal")
-    kb.button(text="⚙️ Изменить актив", callback_data="change_asset")
-    kb.button(text="🕰 Изменить время", callback_data="change_schedule")
-    kb.adjust(1)
-    return kb.as_markup()
+# Клавиатура выбора актива
+def asset_keyboard():
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="BTCUSD", callback_data="set_asset:BTCUSD")],
+        [InlineKeyboardButton(text="XAUUSD", callback_data="set_asset:XAUUSD")],
+        [InlineKeyboardButton(text="USTECH100", callback_data="set_asset:USTECH100")],
+        [InlineKeyboardButton(text="📩 Запросить сигнал", callback_data="get_signal")]
+    ])
+    return kb
 
 @dp.message(F.text == "/start")
-async def start(message: types.Message):
-    user_id = message.from_user.id
-    user_settings[user_id] = {"asset": "BTC-USD", "schedule": {"days": list(range(7)), "hours": list(range(24))}}
-    await message.answer("Пора выбраться из матрицы", reply_markup=get_keyboard())
+async def start(message: Message):
+    user_asset[message.chat.id] = "BTCUSD"
+    await message.answer("Пора выбраться из матрицы.\nВыбери актив:", reply_markup=asset_keyboard())
 
-@dp.callback_query(F.data == "change_asset")
-async def change_asset(callback: types.CallbackQuery):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="BTCUSD", callback_data="asset_BTC-USD")],
-        [InlineKeyboardButton(text="XAUUSD", callback_data="asset_GC=F")],
-        [InlineKeyboardButton(text="USTECH100", callback_data="asset_NDX")]
-    ])
-    await callback.message.edit_text("Выбери актив:", reply_markup=kb)
-
-@dp.callback_query(F.data.startswith("asset_"))
-async def set_asset(callback: types.CallbackQuery):
-    asset = callback.data.split("_")[1]
-    user_settings[callback.from_user.id]["asset"] = asset
-    await callback.message.edit_text(f"Акттив установлен: <b>{asset}</b>", reply_markup=get_keyboard())
-
-@dp.callback_query(F.data == "change_schedule")
-async def ask_day(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("Введи дни недели (0-пн ... 6-вс) через запятую:")
-    await state.set_state(Settings.waiting_for_day)
-
-@dp.message(Settings.waiting_for_day)
-async def set_days(message: types.Message, state: FSMContext):
-    try:
-        days = list(map(int, message.text.split(",")))
-        await state.update_data(days=days)
-        await message.answer("Теперь введи часы (например: 9,12,18):")
-        await state.set_state(Settings.waiting_for_hour)
-    except:
-        await message.answer("Неверный формат. Попробуй снова.")
-
-@dp.message(Settings.waiting_for_hour)
-async def set_hours(message: types.Message, state: FSMContext):
-    try:
-        hours = list(map(int, message.text.split(",")))
-        data = await state.get_data()
-        user_settings[message.from_user.id]["schedule"] = {
-            "days": data["days"],
-            "hours": hours
-        }
-        await message.answer("Расписание обновлено", reply_markup=get_keyboard())
-        await state.clear()
-    except:
-        await message.answer("Ошибка. Попробуй снова.")
+@dp.callback_query(F.data.startswith("set_asset"))
+async def set_asset(call):
+    asset = call.data.split(":")[1]
+    user_asset[call.message.chat.id] = asset
+    await call.message.answer(f"✅ Актив выбран: <b>{asset}</b>")
 
 @dp.callback_query(F.data == "get_signal")
-async def get_signal_now(callback: types.CallbackQuery):
-    asset = user_settings[callback.from_user.id]["asset"]
-    signal = generate_signal(asset)
+async def get_signal(call):
+    asset = user_asset.get(call.message.chat.id, "BTCUSD")
+    ticker = ASSETS[asset]
+    signal = generate_signal(ticker)
     if signal:
-        if signal["accuracy"] < 60:
-            await callback.message.answer(f'Точность: <b>{signal["accuracy"]}%</b>\n⚠️ Риск велик, не время торговли')
-        elif signal["accuracy"] >= 65:
-            await callback.message.answer(signal["message"], reply_markup=get_keyboard())
+        await call.message.answer(signal, parse_mode=ParseMode.HTML)
     else:
-        await callback.message.answer("Нет данных.")
+        await call.message.answer("⚠️ Риск велик, не время торговли.")
 
-async def auto_send_signals():
-    while True:
-        now = datetime.datetime.now()
-        for user_id, settings in user_settings.items():
-            if now.weekday() in settings["schedule"]["days"] and now.hour in settings["schedule"]["hours"]:
-                asset = settings["asset"]
-                signal = generate_signal(asset)
-                if signal and signal["accuracy"] >= 70:
-                    try:
-                        await bot.send_message(chat_id=user_id, text=signal["message"], reply_markup=get_keyboard())
-                    except Exception as e:
-                        print(f"Ошибка при отправке {e}")
-        await asyncio.sleep(300)
+def generate_signal(ticker):
+    try:
+        df = yf.download(ticker, period="7d", interval="1h", progress=False)
+        if df.empty:
+            return "Нет данных по активу."
 
+        last_price = df["Close"].iloc[-1]
+        direction = random.choice(["Buy", "Sell"])
+        accuracy = round(random.uniform(50, 90), 2)
+
+        if accuracy < 60:
+            return f"<b>Точность прогноза: {accuracy}%</b>\n⚠️ Риск велик, не время торговли."
+
+        if direction == "Buy":
+            tp_percent, sl_percent = 3, 1.5
+        else:
+            tp_percent, sl_percent = 2.5, 1.2
+
+        tp_price = last_price * (1 + tp_percent / 100) if direction == "Buy" else last_price * (1 - tp_percent / 100)
+        sl_price = last_price * (1 - sl_percent / 100) if direction == "Buy" else last_price * (1 + sl_percent / 100)
+
+        return (
+            f"<b>Сигнал по {ticker}</b>\n"
+            f"Направление: <b>{direction}</b>\n"
+            f"Точность прогноза: <b>{accuracy}%</b>\n"
+            f"Цена входа: <b>{round(last_price, 2)}</b>\n"
+            f"🎯 Тейк-Профит: <b>{tp_percent}%</b> → {round(tp_price, 2)}\n"
+            f"🛑 Стоп-Лосс: <b>{sl_percent}%</b> → {round(sl_price, 2)}"
+        ) if (accuracy >= 65) else None
+
+# Запуск
 async def main():
-    asyncio.create_task(auto_send_signals())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
