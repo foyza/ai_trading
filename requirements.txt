@@ -1,5 +1,4 @@
-aiogram==3.4.1
-yfinance
+aiogram==3.3.0
+yfinance==0.2.36
 numpy
 pandas
-python-binance
