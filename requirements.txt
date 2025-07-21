@@ -1,7 +1,7 @@
 aiogram==2.25.1
 aiohttp==3.9.5
 pandas==2.2.2
-TA-Lib==0.4.28
+numpy==1.26.4
 APScheduler==3.10.4
 
 
