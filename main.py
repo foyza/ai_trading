@@ -1,7 +1,5 @@
 import asyncio
 import logging
-import os
-import time
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
@@ -28,6 +26,7 @@ bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 
+
 def get_keyboard():
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="🔄 Получить сигнал")],
@@ -36,6 +35,7 @@ def get_keyboard():
         [KeyboardButton(text="🎯 Стратегия"), KeyboardButton(text="🕒 Расписание")],
         [KeyboardButton(text="📊 Статус")]
     ], resize_keyboard=True)
+
 
 async def get_price_data(symbol: str):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=100&apikey={TWELVE_API_KEY}"
@@ -48,6 +48,7 @@ async def get_price_data(symbol: str):
     df.set_index('datetime', inplace=True)
     df = df.astype(float)
     return df
+
 
 def calculate_signal(df, strategy):
     close = df['close']
@@ -69,8 +70,8 @@ def calculate_signal(df, strategy):
             signal = signals[0]
             score = 75 + np.random.randint(0, 6)
         elif signals.count(signals[0]) == 2:
-            signal = "ind: 2/3"
-            score = 60 + np.random.randint(0, 6)
+            signal = signals[0]
+            score = 65 + np.random.randint(0, 6)
 
     elif strategy == "extended":
         bb = BollingerBands(close)
@@ -85,39 +86,46 @@ def calculate_signal(df, strategy):
         if signals.count(signals[0]) == 3:
             signal = signals[0]
             score = 78 + np.random.randint(0, 3)
+        elif signals.count(signals[0]) == 2:
+            signal = signals[0]
+            score = 65 + np.random.randint(0, 5)
 
     return signal, score
 
+
 def format_signal(symbol, direction, price, score):
-    tp_pct = 0.015
+    tp_pct = 0.02
     sl_pct = 0.01
     tp_price = round(price * (1 + tp_pct if direction == "Buy" else 1 - tp_pct), 2)
     sl_price = round(price * (1 - sl_pct if direction == "Buy" else 1 + sl_pct), 2)
-    return f"""
-📈 <b>{symbol}</b>
-📊 Точность: <b>{score}%</b>
-🔁 Сигнал: <b>{direction}</b>
-💵 Вход: <b>{price}</b>
-🎯 TP: <b>{tp_pct*100:.1f}%</b> → <b>{tp_price}</b>
-🛡️ SL: <b>{sl_pct*100:.1f}%</b> → <b>{sl_price}</b>
-"""
+
+    return (
+        f"📈 <b>{symbol}</b>\n"
+        f"📊 Точность: <b>{score}%</b>\n"
+        f"🔁 Сигнал: <b>{direction}</b>\n"
+        f"💵 Вход: <b>{price}</b>\n"
+        f"🎯 TP: <b>{tp_pct*100:.1f}%</b> → <b>{tp_price}</b>\n"
+        f"🛡️ SL: <b>{sl_pct*100:.1f}%</b> → <b>{sl_price}</b>"
+    )
+
 
 @dp.message(commands=["start"])
 async def start(message: types.Message):
     user_id = message.from_user.id
     user_data[user_id] = {
-        "symbol": "BTCUSD",
-        "mute": False,
+        "symbol": "BTCUSD","mute": False,
         "strategy": "classic"
     }
     await message.answer("Пора выбраться из матрицы", reply_markup=get_keyboard())
 
-@dp.message()async def handle_message(message: types.Message):
+
+@dp.message()
+async def handle_message(message: types.Message):
     user_id = message.from_user.id
     text = message.text
     data = user_data.setdefault(user_id, {"symbol": "BTCUSD", "mute": False, "strategy": "classic"})
 
-    if text in ["BTCUSD", "XAUUSD", "USTECH100"]:
+    if text in SYMBOL_MAP:
         data["symbol"] = text
         await message.answer(f"Актив установлен: {text}")
 
@@ -134,48 +142,51 @@ async def start(message: types.Message):
         await message.answer(f"Стратегия установлена: {data['strategy']}")
 
     elif text == "📊 Статус":
-        await message.answer(f"""
-🧾 Ваш статус:
-• Актив: {data['symbol']}
-• Стратегия: {data['strategy']}
-• Звук: {'🔕 Mute' if data['mute'] else '🔔 Unmute'}
-""")
+        await message.answer(
+            f"🧾 Ваш статус:\n• Актив: {data['symbol']}\n• Стратегия: {data['strategy']}\n• Звук: {'🔕 Mute' if data['mute'] else '🔔 Unmute'}"
+        )
 
     elif text == "🔄 Получить сигнал":
         symbol = data["symbol"]
         df = await get_price_data(SYMBOL_MAP[symbol])
         if df is None:
-            await message.answer("Ошибка получения данных")
+            await message.answer("❌ Ошибка получения данных")
             return
+
         signal, score = calculate_signal(df, data["strategy"])
         price = df['close'].iloc[-1]
 
-        if score >= 65:
+        if score >= 65 and signal in ["Buy", "Sell"]:
             msg = format_signal(symbol, signal, price, score)
             await message.answer(msg)
         elif score < 60:
-            await message.answer(f"⚠️ Риск велик, не время торговли (точность: {score}%)")
+            await message.answer(f"⚠️ Сигнал слишком слабый. Точность: {score}%")
         else:
             await message.answer("Сигнал недостаточно надёжен.")
+
 
 async def auto_check():
     for user_id, data in user_data.items():
         if data["mute"]:
             continue
+
         symbol = data["symbol"]
         df = await get_price_data(SYMBOL_MAP[symbol])
         if df is None:
             continue
+
         signal, score = calculate_signal(df, data["strategy"])
         if score >= 70 and signal in ["Buy", "Sell"]:
             price = df['close'].iloc[-1]
             msg = format_signal(symbol, signal, price, score)
             await bot.send_message(user_id, msg)
 
+
 async def main():
     scheduler.add_job(auto_check, "interval", minutes=5)
     scheduler.start()
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
