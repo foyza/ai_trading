@@ -1,194 +1,219 @@
 import asyncio
-import logging
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message
 from aiogram.enums import ParseMode
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiogram.filters import CommandStart
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
+import pandas as pd
+import numpy as np
+import aiohttp
 from ta.trend import MACD
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.volatility import BollingerBands
 from ta.volume import OnBalanceVolumeIndicator
-import numpy as np
-import pandas as pd
-import requests
 
-TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
+# 🔐 Токен Telegram бота и TwelveData API
+BOT_TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
 TWELVE_API_KEY = "5e5e950fa71c416e9ffdb86fce72dc4f"
-SYMBOL_MAP = {
+
+# 🎯 Активы
+ASSETS = {
     "BTCUSD": "BTC/USD",
     "XAUUSD": "XAU/USD",
-    "USTECH100": "NAS100"
+    "USTECH100": "NDX"
 }
 
+# 📦 Состояния
 user_data = {}
 
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
-scheduler = AsyncIOScheduler()
 
 
+# ✅ Клавиатура
 def get_keyboard():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="🔄 Получить сигнал")],
-        [KeyboardButton(text="BTCUSD"), KeyboardButton(text="XAUUSD"), KeyboardButton(text="USTECH100")],
-        [KeyboardButton(text="🔕 Mute"), KeyboardButton(text="🔔 Unmute")],
-        [KeyboardButton(text="🎯 Стратегия"), KeyboardButton(text="🕒 Расписание")],
-        [KeyboardButton(text="📊 Статус")]
-    ], resize_keyboard=True)
+    kb = ReplyKeyboardBuilder()
+    kb.button(text="🔄 Получить сигнал")
+    kb.button(text="BTCUSD")
+    kb.button(text="XAUUSD")
+    kb.button(text="USTECH100")
+    kb.button(text="🔕 Mute")
+    kb.button(text="🔔 Unmute")
+    kb.button(text="🎯 Стратегия: MA+RSI+MACD")
+    return kb.as_markup(resize_keyboard=True)
 
 
-async def get_price_data(symbol: str):
+# ✅ Получение OHLC данных
+async def fetch_data(symbol: str):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=100&apikey={TWELVE_API_KEY}"
-    response = requests.get(url).json()
-    if 'values' not in response:
-        return None
-    df = pd.DataFrame(response['values'])
-    df['datetime'] = pd.to_datetime(df['datetime'])
-    df = df.sort_values('datetime')
-    df.set_index('datetime', inplace=True)
-    df = df.astype(float)
-    return df
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as r:
+            data = await r.json()
+            if 'values' not in data:
+                return None
+            df = pd.DataFrame(data['values'])
+            df = df.rename(columns={"datetime": "time"})
+            df["time"] = pd.to_datetime(df["time"])
+            df = df.sort_values("time")
+            df.set_index("time", inplace=True)
+            df = df.astype(float)
+            return df
 
 
-def calculate_signal(df, strategy):
+# ✅ Основной индикатор
+def get_signal(df: pd.DataFrame, strategy: str):
     close = df['close']
-    signal = "No signal"
-    score = 0
-
     ma10 = close.rolling(window=10).mean()
     ma50 = close.rolling(window=50).mean()
-    rsi = RSIIndicator(close).rsi()
     macd = MACD(close).macd_diff()
+    rsi = RSIIndicator(close).rsi()
 
-    if strategy == "classic":
-        ma_signal = "Buy" if ma10.iloc[-1] > ma50.iloc[-1] else "Sell"
-        rsi_signal = "Buy" if rsi.iloc[-1] < 30 else "Sell" if rsi.iloc[-1] > 70 else "Neutral"
-        macd_signal = "Buy" if macd.iloc[-1] > 0 else "Sell"
+    agree = 0
+    signal = "Hold"
 
-        signals = [ma_signal, rsi_signal, macd_signal]
-        if signals.count(signals[0]) == 3 and signals[0] != "Neutral":
-            signal = signals[0]
-            score = 75 + np.random.randint(0, 6)
-        elif signals.count(signals[0]) == 2:
-            signal = signals[0]
-            score = 65 + np.random.randint(0, 6)
+    if ma10.iloc[-1] > ma50.iloc[-1]:
+        agree += 1
+    if macd.iloc[-1] > 0:
+        agree += 1
+    if rsi.iloc[-1] > 50:
+        agree += 1
 
-    elif strategy == "extended":
-        bb = BollingerBands(close)
-        stoch = StochasticOscillator(df['high'], df['low'], close)
-        obv = OnBalanceVolumeIndicator(close, df['volume'])
+    if agree == 3:
+        signal = "Buy"
+        confidence = 75
+    elif agree == 0:
+        signal = "Sell"
+        confidence = 75
+    elif agree == 2:
+        signal = "ind: 2/3"
+        confidence = 65
+    else:
+        signal = "Hold"
+        confidence = 50
 
-        bb_signal = "Buy" if close.iloc[-1] < bb.bollinger_lband().iloc[-1] else "Sell"
-        stoch_signal = "Buy" if stoch.stoch_signal().iloc[-1] < 20 else "Sell"
-        obv_signal = "Buy" if obv.on_balance_volume().iloc[-1] > obv.on_balance_volume().iloc[-2] else "Sell"
+    price = close.iloc[-1]
+    tp = price * 1.02
+    sl = price * 0.98
 
-        signals = [bb_signal, stoch_signal, obv_signal]
-        if signals.count(signals[0]) == 3:
-            signal = signals[0]
-            score = 78 + np.random.randint(0, 3)
-        elif signals.count(signals[0]) == 2:
-            signal = signals[0]
-            score = 65 + np.random.randint(0, 5)
-
-    return signal, score
-
-
-def format_signal(symbol, direction, price, score):
-    tp_pct = 0.02
-    sl_pct = 0.01
-    tp_price = round(price * (1 + tp_pct if direction == "Buy" else 1 - tp_pct), 2)
-    sl_price = round(price * (1 - sl_pct if direction == "Buy" else 1 + sl_pct), 2)
-
-    return (
-        f"📈 <b>{symbol}</b>\n"
-        f"📊 Точность: <b>{score}%</b>\n"
-        f"🔁 Сигнал: <b>{direction}</b>\n"
-        f"💵 Вход: <b>{price}</b>\n"
-        f"🎯 TP: <b>{tp_pct*100:.1f}%</b> → <b>{tp_price}</b>\n"
-        f"🛡️ SL: <b>{sl_pct*100:.1f}%</b> → <b>{sl_price}</b>"
-    )
-
-
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    user_id = message.from_user.id
-    user_data[user_id] = {
-        "symbol": "BTCUSD","mute": False,
-        "strategy": "classic"
+    return {
+        "direction": signal,
+        "confidence": confidence,
+        "entry": round(price, 2),
+        "tp_price": round(tp, 2),
+        "sl_price": round(sl, 2),
+        "tp_pct": "2%",
+        "sl_pct": "2%"
     }
+
+
+# ✅ Старт
+@dp.message(CommandStart())
+async def start(message: Message):
+    user_data[message.from_user.id] = {"asset": "BTCUSD", "muted": False, "strategy": "MA+RSI+MACD"}
     await message.answer("Пора выбраться из матрицы", reply_markup=get_keyboard())
 
 
-@dp.message()
-async def handle_message(message: types.Message):
-    user_id = message.from_user.id
-    text = message.text
-    data = user_data.setdefault(user_id, {"symbol": "BTCUSD", "mute": False, "strategy": "classic"})
+# ✅ Обработка всех сообщений
+@dp.message(F.text)
+async def handle_message(message: Message):
+    uid = message.from_user.id
+    text = message.text.strip()
 
-    if text in SYMBOL_MAP:
-        data["symbol"] = text
+    if uid not in user_data:
+        user_data[uid] = {"asset": "BTCUSD", "muted": False, "strategy": "MA+RSI+MACD"}
+
+    if text in ASSETS:
+        user_data[uid]["asset"] = text
         await message.answer(f"Актив установлен: {text}")
+        return
 
-    elif text == "🔕 Mute":
-        data["mute"] = True
-        await message.answer("🔇 Уведомления выключены")
+    if text == "🔄 Получить сигнал":
+        await send_signal(message, uid, manual=True)
+        return
 
-    elif text == "🔔 Unmute":
-        data["mute"] = False
+    if text == "🔕 Mute":
+        user_data[uid]["muted"] = True
+        await message.answer("🔕 Уведомления выключены")
+        return
+
+    if text == "🔔 Unmute":
+        user_data[uid]["muted"] = False
         await message.answer("🔔 Уведомления включены")
+        return
 
-    elif text == "🎯 Стратегия":
-        data["strategy"] = "extended" if data["strategy"] == "classic" else "classic"
-        await message.answer(f"Стратегия установлена: {data['strategy']}")
-
-    elif text == "📊 Статус":
-        await message.answer(
-            f"🧾 Ваш статус:\n• Актив: {data['symbol']}\n• Стратегия: {data['strategy']}\n• Звук: {'🔕 Mute' if data['mute'] else '🔔 Unmute'}"
-        )
-
-    elif text == "🔄 Получить сигнал":
-        symbol = data["symbol"]
-        df = await get_price_data(SYMBOL_MAP[symbol])
-        if df is None:
-            await message.answer("❌ Ошибка получения данных")
-            return
-
-        signal, score = calculate_signal(df, data["strategy"])
-        price = df['close'].iloc[-1]
-
-        if score >= 65 and signal in ["Buy", "Sell"]:
-            msg = format_signal(symbol, signal, price, score)
-            await message.answer(msg)
-        elif score < 60:
-            await message.answer(f"⚠️ Сигнал слишком слабый. Точность: {score}%")
-        else:
-            await message.answer("Сигнал недостаточно надёжен.")
+    if "🎯 Стратегия" in text:
+        user_data[uid]["strategy"] = "MA+RSI+MACD"
+        await message.answer("Стратегия установлена: MA+RSI+MACD")
+        return
 
 
-async def auto_check():
-    for user_id, data in user_data.items():
-        if data["mute"]:
-            continue
+# ✅ Отправка сигнала
+async def send_signal(message: Message, uid: int, manual=False):
+    asset = user_data[uid]["asset"]
+    df = await fetch_data(asset)
+    if df is None or df.empty:
+        await message.answer("❌ Ошибка получения данных.")
+        return
 
-        symbol = data["symbol"]
-        df = await get_price_data(SYMBOL_MAP[symbol])
-        if df is None:
-            continue
+    strategy = user_data[uid]["strategy"]
+    signal = get_signal(df, strategy)
+    confidence = signal["confidence"]
 
-        signal, score = calculate_signal(df, data["strategy"])
-        if score >= 70 and signal in ["Buy", "Sell"]:
-            price = df['close'].iloc[-1]
-            msg = format_signal(symbol, signal, price, score)
-            await bot.send_message(user_id, msg)
+    if manual and confidence < 65:
+        await message.answer(f"⚠️ Риск велик, не время торговли (точность: {confidence}%)")
+        return
+
+    if not manual and confidence < 70:
+        return  # не отправляем авто-сигнал
+
+    direction = signal["direction"]
+    entry = signal["entry"]
+    tp_price = signal["tp_price"]
+    sl_price = signal["sl_price"]
+    tp_pct = signal["tp_pct"]
+    sl_pct = signal["sl_pct"]
+
+    msg = f"""📡 <b>Новый сигнал по {asset}</b>
+<b>Направление:</b> {direction}
+<b>Цена входа:</b> {entry}
+<b>🎯 TP:</b> {tp_pct} → {tp_price}
+<b>🛑 SL:</b> {sl_pct} → {sl_price}
+<b>📈 Точность:</b> {confidence}%
+"""
+    await message.answer(msg, disable_notification=user_data[uid]["muted"])
 
 
+# 🔁 Авто-сигналы каждые 2 мин
+async def auto_signal_loop():
+    while True:
+        for uid in user_data:
+            chat = user_data[uid]
+            df = await fetch_data(chat["asset"])
+            if df is None:
+                continue
+            signal = get_signal(df, chat["strategy"])
+            if signal["confidence"] >= 70:
+                try:
+                    await bot.send_message(
+                        uid,
+                        f"""📡 <b>Авто сигнал по {chat["asset"]}</b>
+<b>Направление:</b> {signal["direction"]}
+<b>Цена входа:</b> {signal["entry"]}
+<b>🎯 TP:</b> {signal["tp_pct"]} → {signal["tp_price"]}
+<b>🛑 SL:</b> {signal["sl_pct"]} → {signal["sl_price"]}
+<b>📈 Точность:</b> {signal["confidence"]}%
+""",
+                        disable_notification=chat["muted"]
+                    )
+                except:
+                    pass
+        await asyncio.sleep(120)  # каждые 2 мин
+
+
+# ▶️ Запуск
 async def main():
-    scheduler.add_job(auto_check, "interval", minutes=5)
-    scheduler.start()
+    loop.create_task(auto_signal_loop())
     await dp.start_polling(bot)
 
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    asyncio.run(main())
+loop = asyncio.get_event_loop()
+loop.run_until_complete(main())
