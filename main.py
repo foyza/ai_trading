@@ -1,191 +1,145 @@
-import asyncio
 import logging
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.enums.parse_mode import ParseMode
 import pandas as pd
-from binance import Client
-import requests
-import numpy as np
+import asyncio
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from datetime import datetime
+import aiohttp
 
-# ==== Константы ====
 API_TOKEN = '8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA'
-TWELVE_DATA_KEY = '5e5e950fa71c416e9ffdb86fce72dc4f'
-ASSETS = {
-    "BTCUSD": ("BTCUSDT", "BTC/USD"),
-    "XAUUSD": ("XAUUSDT", "XAU/USD"),
-    "USTECH100": (None, "NAS100"),
-}
+TWELVE_API_KEY = '5e5e950fa71c416e9ffdb86fce72dc4f'
 
-user_state = {}
-user_schedule = {}
-
-# ==== Telegram-кнопки ====
-main_kb = ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
-    [KeyboardButton(text="🔄 Получить сигнал")],
-    [KeyboardButton(text="BTCUSD"), KeyboardButton(text="XAUUSD"), KeyboardButton(text="USTECH100")],
-    [KeyboardButton(text="🔕 Mute"), KeyboardButton(text="🔔 Unmute")],
-    [KeyboardButton(text="📊 Статус")]
-])
-
-bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# ==== Binance API без ключа ====
-client = Client()
+# Словари
+user_assets = {}
+user_mute = {}
+strategy = 'ma_rsi_macd'  # Пока одна стратегия
+assets = {
+    'BTCUSD': 'BTC/USD',
+    'XAUUSD': 'XAU/USD',
+    'USTECH100': 'NDX/USD'
+}
 
-# ==== Получение данных ====
-def get_binance_data(symbol):
-    klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_15MINUTE, limit=100)
-    df = pd.DataFrame(klines, columns=[
-        'time', 'open', 'high', 'low', 'close', 'volume',
-        'close_time', 'qav', 'trades', 'tb_base_vol', 'tb_quote_vol', 'ignore'
-    ])
-    df['close'] = df['close'].astype(float)
-    return df[['close']]
+# Кнопки
+keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🔄 Получить сигнал")],
+        [KeyboardButton(text="BTCUSD"), KeyboardButton(text="XAUUSD"), KeyboardButton(text="USTECH100")],
+        [KeyboardButton(text="🔕 Mute"), KeyboardButton(text="🔔 Unmute")]
+    ],
+    resize_keyboard=True
+)
 
-def get_twelve_data(symbol):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=100&apikey={TWELVE_DATA_KEY}"
-    r = requests.get(url).json()
-    if "values" not in r:
-        return pd.DataFrame({"close": []})
-    df = pd.DataFrame(r['values'])
-    df['close'] = df['close'].astype(float)
-    return df[['close']]
+# Логгер
+logging.basicConfig(level=logging.INFO)
 
-def get_combined_data(asset_key):
-    if asset_key == "USTECH100":
-        return get_twelve_data("NAS100")
-    binance_symbol, tw_symbol = ASSETS[asset_key]
-    df1 = get_binance_data(binance_symbol)
-    df2 = get_twelve_data(tw_symbol)
+# === Получение данных из TwelveData ===
+async def fetch_data_twelvedata(symbol):
+    interval = '15min'
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=100&apikey={TWELVE_API_KEY}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            data = await resp.json()
+            try:
+                df = pd.DataFrame(data['values'])
+                df = df.iloc[::-1].reset_index(drop=True)
+                df['close'] = df['close'].astype(float)
+                return df
+            except:
+                return None
 
-    min_len = min(len(df1), len(df2))
-    df1 = df1.tail(min_len).reset_index(drop=True)
-    df2 = df2.tail(min_len).reset_index(drop=True)
+# === Стратегия на MA10/MA50 + RSI + MACD ===
+def analyze(df):
+    if df is None or len(df) < 50:
+        return {'signal': None, 'accuracy': 0}
 
-    df = df1.copy()
-    df['close'] = (df1['close'] + df2['close']) / 2
-    return df
+    df['MA10'] = df['close'].rolling(window=10).mean()
+    df['MA50'] = df['close'].rolling(window=50).mean()
+    df['EMA12'] = df['close'].ewm(span=12, adjust=False).mean()
+    df['EMA26'] = df['close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = df['EMA12'] - df['EMA26']
+    df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    delta = df['close'].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
+    rs = avg_gain / avg_loss
+    df['RSI'] = 100 - (100 / (1 + rs))
 
-# ==== Индикаторы ====
-def calculate_indicators(df):
-    df['ma10'] = df['close'].rolling(10).mean()
-    df['ma50'] = df['close'].rolling(50).mean()
-    df['rsi'] = compute_rsi(df['close'], 14)
-    df['macd'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
-    df['signal'] = df['macd'].ewm(span=9).mean()
-    return df
-
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    up = np.where(delta > 0, delta, 0)
-    down = np.where(delta < 0, -delta, 0)
-    roll_up = pd.Series(up).rolling(window=period).mean()
-    roll_down = pd.Series(down).rolling(window=period).mean()
-    rs = roll_up / roll_down
-    return 100 - (100 / (1 + rs))
-
-# ==== Анализ сигнала ====
-def analyze_signal(df):
     last = df.iloc[-1]
-    ind = 0
-    if last['ma10'] > last['ma50']:
-        ind += 1
-    if last['rsi'] > 55:
-        ind += 1
-    if last['macd'] > last['signal']:
-        ind += 1
 
-    if ind == 3:
-        direction = "Buy"
-        accuracy = 80
-    elif ind == 0:
-        direction = "Sell"
-        accuracy = 80
-    elif ind == 2:
-        return "ind: 2/3 — недостаточно точный сигнал", 60, None, None, None
-    else:
-        return "⚠️ Риск велик, не время торговли", 50, None, None, None
+    signals = {
+        'ma': 'Buy' if last['MA10'] > last['MA50'] else 'Sell',
+        'macd': 'Buy' if last['MACD'] > last['Signal'] else 'Sell',
+        'rsi': 'Buy' if last['RSI'] < 30 else 'Sell' if last['RSI'] > 70 else 'Neutral'
+    }
 
-    price = last['close']
-    tp = price * 1.01 if direction == "Buy" else price * 0.99
-    sl = price * 0.99 if direction == "Buy" else price * 1.01
-    return direction, accuracy, price, tp, sl
+    agree = list(signals.values()).count('Buy') if 'Buy' in signals.values() else list(signals.values()).count('Sell')
+    final_signal = 'Buy' if list(signals.values()).count('Buy') >= 2 else 'Sell' if list(signals.values()).count('Sell') >= 2 else None
+    accuracy = 80 if agree == 3 else 70 if agree == 2 else 50
 
-# ==== Проверка расписания ====
-def check_schedule(user_id):
-    schedule = user_schedule.get(user_id)
-    if not schedule:
-        return True  # По умолчанию круглосуточно
-    from datetime import datetime
-    now = datetime.now()
-    weekday = now.strftime('%A')
-    if weekday not in schedule:
-        return False
-    start, end = schedule[weekday]
-    return start <= now.hour < end
-# ==== Команды и кнопки ====
-@dp.message(F.text == "/start")
-async def start(message: types.Message):
-    user_state[message.from_user.id] = "BTCUSD"
-    await message.answer("Пора выбраться из матрицы", reply_markup=main_kb)
+    return {
+        'signal': final_signal,
+        'accuracy': accuracy,
+        'entry': round(last['close'], 2),
+        'tp': round(last['close'] * (1.02 if final_signal == 'Buy' else 0.98), 2),
+        'sl': round(last['close'] * (0.98 if final_signal == 'Buy' else 1.02), 2),
+        'indicators': f"ind: {agree}/3"
+    }
 
-@dp.message(F.text.in_(["BTCUSD", "XAUUSD", "USTECH100"]))
-async def asset_select(message: types.Message):
-    user_state[message.from_user.id] = message.text
-    await message.answer(f"Актив переключён на {message.text}")
+# === Отправка сигнала ===
+async def send_signal(user_id, asset):
+    symbol = assets.get(asset)
+    df = await fetch_data_twelvedata(symbol)
+    result = analyze(df)
 
-@dp.message(F.text == "🔄 Получить сигнал")
-async def handle_signal(message: types.Message):
-    user_id = message.from_user.id
-    asset = user_state.get(user_id, "BTCUSD")
-    if not check_schedule(user_id):
-        await message.answer("⏰ Вне торгового времени")
-        return
-    df = get_combined_data(asset)
-    df = calculate_indicators(df)
-    direction, acc, price, tp, sl = analyze_signal(df)
-    if acc >= 65:
-        if acc >= 70:
-            alert = "🚨 <b>AI сигнал</b>"
-        else:
-            alert = "🔍 <b>Ручной сигнал</b>"
-        await message.answer(
-            f"{alert}\n\n"
-            f"📈 Актив: <b>{asset}</b>\n"
-            f"📊 Точность: <b>{acc}%</b>\n"
-            f"📉 Направление: <b>{direction}</b>\n"
-            f"💰 Цена входа: <b>{round(price, 2)}</b>\n"
-            f"🎯 TP: <b>{round(tp, 2)}</b> ({round(abs(tp - price) / price * 100, 2)}%)\n"
-            f"🛑 SL: <b>{round(sl, 2)}</b> ({round(abs(sl - price) / price * 100, 2)}%)"
+    if result['accuracy'] >= 70:
+        msg = (
+            f"📊 Сигнал ({asset})\n"
+            f"▶️ Направление: {result['signal']}\n"
+            f"🎯 Вход: {result['entry']}\n"
+            f"✅ TP: {result['tp']} ({'2%'})\n"
+            f"🛑 SL: {result['sl']} ({'2%'})\n"
+            f"📈 Точность: {result['accuracy']}%\n"
+            f"{result['indicators']}"
         )
+        disable_notification = user_mute.get(user_id, False)
+        await bot.send_message(user_id, msg, disable_notification=disable_notification)
+    elif result['accuracy'] < 60:
+        await bot.send_message(user_id, f"⚠️ Риск велик, не время торговли (точность: {result['accuracy']}%)")
+
+# === Хендлеры ===
+@dp.message(commands=["start"])
+async def cmd_start(msg: types.Message):
+    user_assets[msg.from_user.id] = "BTCUSD"
+    user_mute[msg.from_user.id] = False
+    await msg.answer("Пора выбраться из матрицы", reply_markup=keyboard)
+
+@dp.message()
+async def handle_message(msg: types.Message):
+    text = msg.text
+    uid = msg.from_user.id
+
+    if text in assets:
+        user_assets[uid] = text
+        await msg.answer(f"✅ Актив выбран: {text}")
+    elif text == "🔄 Получить сигнал":
+        asset = user_assets.get(uid, "BTCUSD")
+        await send_signal(uid, asset)
+    elif text == "🔕 Mute":
+        user_mute[uid] = True
+        await msg.answer("🔕 Уведомления отключены")
+    elif text == "🔔 Unmute":
+        user_mute[uid] = False
+        await msg.answer("🔔 Уведомления включены")
     else:
-        await message.answer(f"⚠️ Риск велик, не время торговли (точность: {acc}%)")
+        await msg.answer("Выберите действие с клавиатуры")
 
-@dp.message(F.text == "📊 Статус")
-async def status(message: types.Message):
-    uid = message.from_user.id
-    schedule = user_schedule.get(uid)
-    if not schedule:
-        await message.answer("🕒 Расписание: КРУГЛОСУТОЧНО, все дни")
-    else:
-        txt = "🕒 <b>Расписание:</b>\n"
-        for day, (start, end) in schedule.items():
-            txt += f"• {day}: {start}:00–{end}:00\n"
-        await message.answer(txt)
-
-@dp.message(F.text == "🔕 Mute")
-async def mute(message: types.Message):
-    await message.answer("🔕 Звук отключен (не реализовано)")
-
-@dp.message(F.text == "🔔 Unmute")
-async def unmute(message: types.Message):
-    await message.answer("🔔 Звук включен (не реализовано)")
-
-# ==== Запуск ====
+# === Запуск ===
 async def main():
-    logging.basicConfig(level=logging.INFO)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
