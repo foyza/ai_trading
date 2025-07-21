@@ -3,7 +3,7 @@ import sqlite3
 import requests
 import pandas as pd
 import numpy as np
-import talib
+import pandas_ta as ta
 import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
@@ -52,9 +52,9 @@ def analyze(data, strategy):
 
     close = data['close'].values
     if strategy == 'MA+RSI+MACD':
-        ma10 = talib.SMA(close, timeperiod=10)
-        ma50 = talib.SMA(close, timeperiod=50)
-        rsi = talib.RSI(close, timeperiod=14)
+        ma10 = data['close'].ta.sma(10)
+        rsi = data['close'].ta.rsi(14)
+        macd = data['close'].ta.macd()
         macd, macdsignal, _ = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
 
         signal = (
