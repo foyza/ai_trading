@@ -5,3 +5,4 @@ aiohttp
 python-binance
 requests
 python-dotenv
+httpx
