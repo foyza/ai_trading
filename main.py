@@ -1,17 +1,24 @@
 import asyncio
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.enums.parse_mode import ParseMode
 import logging
+import os
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.enums.parse_mode import ParseMode
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from dotenv import load_dotenv
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
-import os
 import yfinance as yf
 
-# Загрузка токена из переменных окружения
+# Загрузка переменных окружения
 load_dotenv()
-API_TOKEN = os.getenv('8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA')
+API_TOKEN = os.getenv("8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA")
+
+if not API_TOKEN:
+    raise ValueError("❌ BOT_TOKEN не найден. Добавь его в .env или переменные Railway!")
+
+# Инициализация бота
+bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher()
 
 ASSETS = {
     'BTCUSD': 'BTC-USD',
@@ -21,16 +28,11 @@ ASSETS = {
 
 user_settings = {}
 
-bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
-dp = Dispatcher()
-
-# Клавиатура
 main_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="🔄 Получить сигнал")],
     [KeyboardButton(text="BTCUSD"), KeyboardButton(text="XAUUSD"), KeyboardButton(text="USTECH100")],
     [KeyboardButton(text="🔕 Mute"), KeyboardButton(text="🔔 Unmute")],
-    [KeyboardButton(text="🎯 Стратегия"), KeyboardButton(text="🕒 Расписание")],
-    [KeyboardButton(text="📊 Статус")]
+    [KeyboardButton(text="🎯 Стратегия"), KeyboardButton(text="📊 Статус")]
 ], resize_keyboard=True)
 
 @dp.message(F.text == "/start")
@@ -40,9 +42,9 @@ async def start_handler(msg: types.Message):
         'mute': False,
         'strategy': 'MA+RSI+MACD'
     }
-    await msg.answer("Пора выбраться из матрицы", reply_markup=main_kb)
+    await msg.answer("Добро пожаловать! Бот запущен.", reply_markup=main_kb)
 
-@dp.message(F.text.in_(['BTCUSD', 'XAUUSD', 'USTECH100']))
+@dp.message(F.text.in_(ASSETS.keys()))
 async def asset_select(msg: types.Message):
     user_settings[msg.from_user.id]['asset'] = msg.text
     await msg.answer(f"✅ Актив установлен: <b>{msg.text}</b>")
@@ -72,10 +74,6 @@ async def status(msg: types.Message):
 Стратегия: {u['strategy']}
 Mute: {"Вкл" if u['mute'] else "Выкл"}""")
 
-@dp.message(F.text == "🕒 Расписание")
-async def schedule(msg: types.Message):
-    await msg.answer("🕒 Расписание пока не настраивается. По умолчанию — круглосуточно.")
-
 @dp.message(F.text == "🔄 Получить сигнал")
 async def manual_signal(msg: types.Message):
     uid = msg.from_user.id
@@ -84,71 +82,58 @@ async def manual_signal(msg: types.Message):
     signal = await generate_signal(asset, strategy)
     if signal['accuracy'] >= 65:
         await msg.answer(format_signal(signal), disable_notification=user_settings[uid]['mute'])
-    elif signal['accuracy'] < 60:
-        await msg.answer(f"⚠️ Риск велик, не время торговли (точность: {signal['accuracy']}%)")
+    else:
+        await msg.answer(f"⚠️ Низкая точность ({signal['accuracy']}%), торговля не рекомендована.")
 
-async def generate_signal(symbol: str, strategy: str):
-    prices = await get_prices(symbol)
-    if not prices or len(prices) < 50:
+async def generate_signal(asset_code, strategy):
+    prices = await get_prices(asset_code)
+    if len(prices) < 50:
         return {'accuracy': 0}
 
     if strategy == "MA+RSI+MACD":
         ma10 = np.mean(prices[-10:])
         ma50 = np.mean(prices[-50:])
         rsi = calculate_rsi(prices)
-        macd, signal_macd = calculate_macd(prices)
+        macd, macd_signal = calculate_macd(prices)
 
-        buy_count = 0
-        sell_count = 0
-
-        if ma10 > ma50:
-            buy_count += 1
+        buy = sum([
+            ma10 > ma50,
+            rsi < 30,
+            macd > macd_signal
+        ])
+        sell = sum([
+            ma10 < ma50,
+            rsi > 70,
+            macd < macd_signal
+        ])
+        if buy == 3:
+            direction, accuracy = "Buy", 75
+        elif sell == 3:
+            direction, accuracy = "Sell", 75
         else:
-            sell_count += 1
-
-        if rsi < 30:
-            buy_count += 1
-        elif rsi > 70:
-            sell_count += 1
-
-        if macd > signal_macd:
-            buy_count += 1
-        else:
-            sell_count += 1
-
-        agree = buy_count == 3 or sell_count == 3
-        accuracy = 75 if agree else 50 if buy_count + sell_count == 2 else 40
-
-        if not agree:
-            return {'accuracy': accuracy}
-
-        direction = "Buy" if buy_count == 3 else "Sell"
-
-    else:  # Bollinger+Volume
+            return {'accuracy': 50}
+    else:
         df = pd.Series(prices)
         ma = df.rolling(window=20).mean()
         std = df.rolling(window=20).std()
         upper = ma + 2 * std
         lower = ma - 2 * std
         price = df.iloc[-1]
-
         if price > upper.iloc[-1]:
-            direction = "Sell"
+            direction, accuracy = "Sell", 70
         elif price < lower.iloc[-1]:
-            direction = "Buy"
+            direction, accuracy = "Buy", 70
         else:
             return {'accuracy': 50}
 
-        accuracy = 70
-
-    entry_price = round(prices[-1], 2)
-    tp = round(entry_price * (1.02 if direction == "Buy" else 0.98), 2)
-    sl = round(entry_price * (0.985 if direction == "Buy" else 1.015), 2)
+    entry = round(prices[-1], 2)
+    tp = round(entry * (1.02 if direction == "Buy" else 0.98), 2)
+    sl = round(entry * (0.985 if direction == "Buy" else 1.015), 2)
 
     return {
-        'asset': symbol,
+        'asset': asset_code,
         'direction': direction,
-        'entry': entry_price,
+        'entry': entry,
         'tp_price': tp,
         'sl_price': sl,
         'tp_percent': 2,
@@ -166,10 +151,9 @@ def format_signal(s):
 
 def calculate_rsi(prices, period=14):
     deltas = np.diff(prices)
-    seed = deltas[:period]
-    up = seed[seed >= 0].sum() / period
-    down = -seed[seed < 0].sum() / period
-    rs = up / down if down else 0.01
+    gain = np.where(deltas > 0, deltas, 0).sum() / period
+    loss = -np.where(deltas < 0, deltas, 0).sum() / period
+    rs = gain / loss if loss != 0 else 1
     return 100 - (100 / (1 + rs))
 
 def calculate_macd(prices):
@@ -180,32 +164,15 @@ def calculate_macd(prices):
     signal = macd.ewm(span=9, adjust=False).mean()
     return macd.iloc[-1], signal.iloc[-1]
 
-async def get_prices(symbol: str):
+async def get_prices(symbol):
     try:
-        data = yf.download(tickers=symbol, interval="1m", period="1d")
-        if data.empty:
-            return []
+        data = yf.download(ASSETS[symbol], period="5d", interval="1m", progress=False)
         return data['Close'].tolist()
     except Exception as e:
-        print("Ошибка получения данных:", e)
+        print("Ошибка загрузки:", e)
         return []
 
-async def auto_signal_sender():
-    while True:
-        await asyncio.sleep(60)
-        for uid in user_settings:
-            asset = user_settings[uid]['asset']
-            strategy = user_settings[uid]['strategy']
-            mute = user_settings[uid]['mute']
-            signal = await generate_signal(asset, strategy)
-            if signal['accuracy'] >= 70:
-                try:
-                    await bot.send_message(uid, format_signal(signal), disable_notification=mute)
-                except:
-                    continue
-
 async def main():
-    asyncio.create_task(auto_signal_sender())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
