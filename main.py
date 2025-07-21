@@ -1,180 +1,182 @@
-import asyncio
 import logging
+import asyncio
+import aiohttp
 import os
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.enums.parse_mode import ParseMode
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from dotenv import load_dotenv
-import numpy as np
+from aiogram import Bot, Dispatcher, executor, types
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pandas as pd
-import yfinance as yf
+import talib
 
-# Загрузка переменных окружения
-load_dotenv()
-API_TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
+API_KEY = "5e5e950fa71c416e9ffdb86fce72dc4f"
+TELEGRAM_TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
 
-if not API_TOKEN:
-    raise ValueError("❌ BOT_TOKEN не найден. Добавь его в .env или переменные Railway!")
+bot = Bot(token=TELEGRAM_TOKEN)
+dp = Dispatcher(bot)
+scheduler = AsyncIOScheduler()
 
-# Инициализация бота
-bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
-dp = Dispatcher()
+# user data: user_id -> settings
+user_data = {}
 
-ASSETS = {
-    'BTCUSD': 'BTC-USD',
-    'XAUUSD': 'GC=F',
-    'USTECH100': '^NDX'
+# --- кнопки ---
+def main_keyboard(user_id):
+    mute = user_data.get(user_id, {}).get("mute", False)
+    mute_btn = "🔔 Unmute" if mute else "🔕 Mute"
+    return InlineKeyboardMarkup(row_width=2).add(
+        InlineKeyboardButton("🔄 Получить сигнал", callback_data="get_signal"),
+        InlineKeyboardButton("BTCUSD", callback_data="set_BTCUSD"),
+        InlineKeyboardButton("XAUUSD", callback_data="set_XAUUSD"),
+        InlineKeyboardButton("EURUSD", callback_data="set_EURUSD"),
+        InlineKeyboardButton(mute_btn, callback_data="toggle_mute"),
+        InlineKeyboardButton("🎯 Стратегия", callback_data="choose_strategy"),
+        InlineKeyboardButton("🕒 Расписание", callback_data="schedule"),
+        InlineKeyboardButton("📊 Статус", callback_data="status")
+    )
+
+strategies = {
+    "default": "ma_rsi_macd",
+    "ma_rsi_macd": "MA + RSI + MACD",
+    "boll_stoch": "Bollinger + Stochastic"
 }
 
-user_settings = {}
+# --- приветствие ---
+@dp.message_handler(commands=["start"])
+async def start(message: types.Message):
+    user_id = message.from_user.id
+    if user_id not in user_data:
+        user_data[user_id] = {
+            "asset": "BTC/USD",
+            "mute": False,
+            "strategy": "ma_rsi_macd",
+            "schedule": {}
+        }
+    await message.answer("💊 Пора выбраться из матрицы", reply_markup=main_keyboard(user_id))
 
-main_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="🔄 Получить сигнал")],
-    [KeyboardButton(text="BTCUSD"), KeyboardButton(text="XAUUSD"), KeyboardButton(text="USTECH100")],
-    [KeyboardButton(text="🔕 Mute"), KeyboardButton(text="🔔 Unmute")],
-    [KeyboardButton(text="🎯 Стратегия"), KeyboardButton(text="📊 Статус")]
-], resize_keyboard=True)
+# --- переключение mute ---
+@dp.callback_query_handler(lambda c: c.data == "toggle_mute")
+async def toggle_mute(call: types.CallbackQuery):
+    user_id = call.from_user.id
+    user_data[user_id]["mute"] = not user_data[user_id].get("mute", False)
+    await call.message.edit_reply_markup(reply_markup=main_keyboard(user_id))
 
-@dp.message(F.text == "/start")
-async def start_handler(msg: types.Message):
-    user_settings[msg.from_user.id] = {
-        'asset': 'BTCUSD',
-        'mute': False,
-        'strategy': 'MA+RSI+MACD'
+# --- выбор актива ---
+@dp.callback_query_handler(lambda c: c.data.startswith("set_"))
+async def set_asset(call: types.CallbackQuery):
+    user_id = call.from_user.id
+    asset_map = {
+        "set_BTCUSD": "BTC/USD",
+        "set_XAUUSD": "XAU/USD",
+        "set_EURUSD": "EUR/USD"
     }
-    await msg.answer("Добро пожаловать! Бот запущен.", reply_markup=main_kb)
+    user_data[user_id]["asset"] = asset_map[call.data]
+    await call.answer(f"✅ Актив выбран: {asset_map[call.data]}")
 
-@dp.message(F.text.in_(ASSETS.keys()))
-async def asset_select(msg: types.Message):
-    user_settings[msg.from_user.id]['asset'] = msg.text
-    await msg.answer(f"✅ Актив установлен: <b>{msg.text}</b>")
+# --- статус пользователя ---
+@dp.callback_query_handler(lambda c: c.data == "status")
+async def status(call: types.CallbackQuery):
+    user_id = call.from_user.id
+    data = user_data[user_id]
+    await call.message.answer(
+        f"📊 Ваши настройки:\n"
+        f"Актив: {data['asset']}\n"
+        f"Стратегия: {strategies.get(data['strategy'], 'не выбрана')}\n"
+        f"Mute: {'On' if data['mute'] else 'Off'}"
+    )
 
-@dp.message(F.text == "🔕 Mute")
-async def mute_on(msg: types.Message):
-    user_settings[msg.from_user.id]['mute'] = True
-    await msg.answer("🔕 Уведомления отключены")
+# --- выбор стратегии ---
+@dp.callback_query_handler(lambda c: c.data == "choose_strategy")
+async def choose_strategy(call: types.CallbackQuery):
+    kb = InlineKeyboardMarkup(row_width=1)
+    for key, name in strategies.items():
+        if key != "default":
+            kb.add(InlineKeyboardButton(name, callback_data=f"strategy_{key}"))
+    await call.message.answer("Выберите стратегию:", reply_markup=kb)
 
-@dp.message(F.text == "🔔 Unmute")
-async def mute_off(msg: types.Message):
-    user_settings[msg.from_user.id]['mute'] = False
-    await msg.answer("🔔 Уведомления включены")
+@dp.callback_query_handler(lambda c: c.data.startswith("strategy_"))
+async def set_strategy(call: types.CallbackQuery):
+    strategy_key = call.data.split("_")[1]
+    user_id = call.from_user.id
+    user_data[user_id]["strategy"] = strategy_key
+    await call.answer(f"✅ Стратегия выбрана: {strategies[strategy_key]}")
 
-@dp.message(F.text == "🎯 Стратегия")
-async def strategy_select(msg: types.Message):
-    current = user_settings[msg.from_user.id]['strategy']
-    new = "Bollinger+Volume" if current == "MA+RSI+MACD" else "MA+RSI+MACD"
-    user_settings[msg.from_user.id]['strategy'] = new
-    await msg.answer(f"🎯 Стратегия установлена: <b>{new}</b>")
+# --- получение сигнала ---
+@dp.callback_query_handler(lambda c: c.data == "get_signal")
+async def get_signal(call: types.CallbackQuery):
+    user_id = call.from_user.id
+    asset = user_data[user_id]["asset"]
+    strategy = user_data[user_id]["strategy"]
+    result = await analyze_asset(asset, strategy)
+    await call.message.answer(result)
 
-@dp.message(F.text == "📊 Статус")
-async def status(msg: types.Message):
-    u = user_settings[msg.from_user.id]
-    await msg.answer(f"""📊 <b>Ваши настройки:</b>
-Актив: {u['asset']}
-Стратегия: {u['strategy']}
-Mute: {"Вкл" if u['mute'] else "Выкл"}""")
+# --- анализ по стратегии ---
+async def analyze_asset(asset, strategy):
+    symbol = asset.replace("/", "")
+    interval = "15min"
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=200&apikey={API_KEY}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            raw = await resp.json()
 
-@dp.message(F.text == "🔄 Получить сигнал")
-async def manual_signal(msg: types.Message):
-    uid = msg.from_user.id
-    asset = user_settings[uid]['asset']
-    strategy = user_settings[uid]['strategy']
-    signal = await generate_signal(asset, strategy)
-    if signal['accuracy'] >= 65:
-        await msg.answer(format_signal(signal), disable_notification=user_settings[uid]['mute'])
+    if "values" not in raw:
+        return "⚠️ Ошибка загрузки данных"
+
+    df = pd.DataFrame(raw["values"])
+    df = df.iloc[::-1].astype(float)
+
+    if strategy == "ma_rsi_macd":
+        signal, confidence = ma_rsi_macd_strategy(df)
     else:
-        await msg.answer(f"⚠️ Низкая точность ({signal['accuracy']}%), торговля не рекомендована.")
+        signal, confidence = boll_stoch_strategy(df)
 
-async def generate_signal(asset_code, strategy):
-    prices = await get_prices(asset_code)
-    if len(prices) < 50:
-        return {'accuracy': 0}
+    if confidence < 60:
+        return f"⚠️ Риск велик, не время торговли (точность: {confidence:.1f}%)"
+    if signal == "Hold":
+        return f"🤖 Нет сигнала (точность: {confidence:.1f}%)"
 
-    if strategy == "MA+RSI+MACD":
-        ma10 = np.mean(prices[-10:])
-        ma50 = np.mean(prices[-50:])
-        rsi = calculate_rsi(prices)
-        macd, macd_signal = calculate_macd(prices)
+    price = df['close'].iloc[-1]
+    tp = price * (1.03 if signal == "Buy" else 0.97)
+    sl = price * (0.97 if signal == "Buy" else 1.03)
 
-        buy = sum([
-            ma10 > ma50,
-            rsi < 30,
-            macd > macd_signal
-        ])
-        sell = sum([
-            ma10 < ma50,
-            rsi > 70,
-            macd < macd_signal
-        ])
-        if buy == 3:
-            direction, accuracy = "Buy", 75
-        elif sell == 3:
-            direction, accuracy = "Sell", 75
-        else:
-            return {'accuracy': 50}
-    else:
-        df = pd.Series(prices)
-        ma = df.rolling(window=20).mean()
-        std = df.rolling(window=20).std()
-        upper = ma + 2 * std
-        lower = ma - 2 * std
-        price = df.iloc[-1]
-        if price > upper.iloc[-1]:
-            direction, accuracy = "Sell", 70
-        elif price < lower.iloc[-1]:
-            direction, accuracy = "Buy", 70
-        else:
-            return {'accuracy': 50}
+    return (
+        f"📈 Сигнал по {asset}\n"
+        f"Направление: {signal}\n"
+        f"Цена входа: {price:.2f}\n"
+        f"🎯 Take-Profit: {tp:.2f}\n"
+        f"🛑 Stop-Loss: {sl:.2f}\n"
+        f"🎯 Точность прогноза: {confidence:.1f}%"
+    )
 
-    entry = round(prices[-1], 2)
-    tp = round(entry * (1.02 if direction == "Buy" else 0.98), 2)
-    sl = round(entry * (0.985 if direction == "Buy" else 1.015), 2)
+# --- стратегии ---
+def ma_rsi_macd_strategy(df):
+    ma10 = talib.MA(df['close'], timeperiod=10)
+    ma50 = talib.MA(df['close'], timeperiod=50)
+    rsi = talib.RSI(df['close'], timeperiod=14)
+    macd, _, _ = talib.MACD(df['close'])
 
-    return {
-        'asset': asset_code,
-        'direction': direction,
-        'entry': entry,
-        'tp_price': tp,
-        'sl_price': sl,
-        'tp_percent': 2,
-        'sl_percent': 1.5,
-        'accuracy': accuracy
-    }
+    buy = ma10.iloc[-1] > ma50.iloc[-1] and rsi.iloc[-1] < 70 and macd.iloc[-1] > 0
+    sell = ma10.iloc[-1] < ma50.iloc[-1] and rsi.iloc[-1] > 30 and macd.iloc[-1] < 0
 
-def format_signal(s):
-    return f"""📈 <b>Сигнал по {s['asset']}</b>
-📊 Направление: <b>{s['direction']}</b>
-💰 Вход: <code>{s['entry']}</code>
-🎯 TP: +{s['tp_percent']}% → <code>{s['tp_price']}</code>
-🛑 SL: -{s['sl_percent']}% → <code>{s['sl_price']}</code>
-✅ Точность прогноза: <b>{s['accuracy']}%</b>"""
+    confidence = 80 if buy or sell else 50
+    signal = "Buy" if buy else "Sell" if sell else "Hold"
+    return signal, confidence
 
-def calculate_rsi(prices, period=14):
-    deltas = np.diff(prices)
-    gain = np.where(deltas > 0, deltas, 0).sum() / period
-    loss = -np.where(deltas < 0, deltas, 0).sum() / period
-    rs = gain / loss if loss != 0 else 1
-    return 100 - (100 / (1 + rs))
+def boll_stoch_strategy(df):
+    upper, middle, lower = talib.BBANDS(df['close'])
+    slowk, slowd = talib.STOCH(df['high'], df['low'], df['close'])
+    buy = df['close'].iloc[-1] < lower.iloc[-1] and slowk.iloc[-1] < 20
+    sell = df['close'].iloc[-1] > upper.iloc[-1] and slowk.iloc[-1] > 80
 
-def calculate_macd(prices):
-    df = pd.Series(prices)
-    ema12 = df.ewm(span=12, adjust=False).mean()
-    ema26 = df.ewm(span=26, adjust=False).mean()
-    macd = ema12 - ema26
-    signal = macd.ewm(span=9, adjust=False).mean()
-    return macd.iloc[-1], signal.iloc[-1]
+    confidence = 75 if buy or sell else 50
+    signal = "Buy" if buy else "Sell" if sell else "Hold"
+    return signal, confidence
 
-async def get_prices(symbol):
-    try:
-        data = yf.download(ASSETS[symbol], period="5d", interval="1m", progress=False)
-        return data['Close'].tolist()
-    except Exception as e:
-        print("Ошибка загрузки:", e)
-        return []
-
-async def main():
-    await dp.start_polling(bot)
+# --- запуск планировщика ---
+async def scheduler_start():
+    scheduler.start()
+    # Здесь можно добавить авто-сигналы по расписанию
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.create_task(scheduler_start())
+    executor.start_polling(dp, skip_updates=True)
