@@ -112,8 +112,8 @@ async def send_signal(user_id, symbol):
     f"🎯 Точность прогноза: <b>{acc}%</b>"
 )
 
-await bot.send_message(chat_id=user_id, text=text, parse_mode="HTML")
-await bot.send_message(chat_id=user_id, text="✅ Сигнал отправлен.")
+    await bot.send_message(chat_id=user_id, text=text, parse_mode="HTML")
+    await bot.send_message(chat_id=user_id, text="✅ Сигнал отправлен.")
 
 # Проверка на пробитие TP/SL (эмуляция)
 current_price = df["close"].iloc[-1]
