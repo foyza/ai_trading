@@ -11,7 +11,7 @@ import yfinance as yf
 
 # Загрузка переменных окружения
 load_dotenv()
-API_TOKEN = os.getenv("8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA")
+API_TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
 
 if not API_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден. Добавь его в .env или переменные Railway!")
