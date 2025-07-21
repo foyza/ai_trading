@@ -2,6 +2,7 @@ import logging
 import pandas as pd
 import asyncio
 from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime
 import aiohttp
@@ -112,7 +113,7 @@ async def send_signal(user_id, asset):
         await bot.send_message(user_id, f"⚠️ Риск велик, не время торговли (точность: {result['accuracy']}%)")
 
 # === Хендлеры ===
-@dp.message(commands=["start"])
+@dp.message(Command("start"))
 async def cmd_start(msg: types.Message):
     user_assets[msg.from_user.id] = "BTCUSD"
     user_mute[msg.from_user.id] = False
