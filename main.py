@@ -109,7 +109,7 @@ async def get_data(symbol):
                 'taker_base_vol', 'taker_quote_vol', 'ignore'
             ])
             df["close"] = df["close"].astype(float)
-return df
+            return df
         else:
             ticker = yf.Ticker("^NDX")
             df = ticker.history(interval="15m", period="1d")
