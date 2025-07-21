@@ -1,193 +1,123 @@
 import asyncio
 import logging
-import datetime
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from binance import AsyncClient as BinanceClient
 import aiohttp
-import numpy as np
+from aiogram import Bot, Dispatcher, F, Router, types
+from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from aiogram.enums.parse_mode import ParseMode
+from binance import AsyncClient
+from datetime import datetime
+from aiogram.filters import CommandStart
 
 API_TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
-TWELVEDATA_API_KEY = "5e5e950fa71c416e9ffdb86fce72dc4f"
+TWELVE_DATA_API_KEY = "5e5e950fa71c416e9ffdb86fce72dc4f"
 
-logging.basicConfig(level=logging.INFO)
-bot = Bot(token=API_TOKEN)
+# Инициализация
+bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
+router = Router()
+client: AsyncClient = None
 
-# ⏱ Расписание: по умолчанию круглосуточно
-user_schedule = {}
+# Состояние по пользователям
 user_assets = {}
 user_mute = {}
 user_strategy = {}
+user_schedule = {}
 
-default_schedule = {
-    'Mon': ('00:00', '23:59'),
-    'Tue': ('00:00', '23:59'),
-    'Wed': ('00:00', '23:59'),
-    'Thu': ('00:00', '23:59'),
-    'Fri': ('00:00', '23:59'),
-    'Sat': ('00:00', '23:59'),
-    'Sun': ('00:00', '23:59')
-}
-
-assets = ["BTCUSDT", "XAUUSD", "USTECH100"]
-strategies = ["MA + RSI + MACD", "Bollinger + Volume"]
-
-# 📲 Клавиатура
-main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-main_kb.add(KeyboardButton("🔄 Получить сигнал"))
-main_kb.row(
-    KeyboardButton("BTCUSD"), KeyboardButton("XAUUSD"), KeyboardButton("USTECH100")
+# Клавиатура
+keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🔄 Получить сигнал")],
+        [KeyboardButton(text="BTCUSD"), KeyboardButton(text="XAUUSD"), KeyboardButton(text="USTECH100")],
+        [KeyboardButton(text="🔕 Mute"), KeyboardButton(text="🔔 Unmute")],
+        [KeyboardButton(text="🎯 Стратегия"), KeyboardButton(text="📊 Статус")],
+    ],
+    resize_keyboard=True
 )
-main_kb.row(KeyboardButton("🔕 Mute"), KeyboardButton("🔔 Unmute"))
-main_kb.row(KeyboardButton("🎯 Стратегия"), KeyboardButton("📅 Статус"))
 
-# 📉 Binance
-async def get_price_binance(symbol: str) -> float:
-    client = await BinanceClient.create()
-    ticker = await client.get_symbol_ticker(symbol=symbol)
-    await client.close_connection()
-    return float(ticker['price'])
-
-# 📊 TwelveData
-async def get_price_twelvedata(symbol: str) -> float:
-    symbol_map = {"BTCUSDT": "BTC/USD", "XAUUSD": "XAU/USD", "USTECH100": "NAS100"}
-    symbol_td = symbol_map.get(symbol, symbol)
-    url = f"https://api.twelvedata.com/price?symbol={symbol_td}&apikey={TWELVEDATA_API_KEY}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            data = await resp.json()
-            if "price" in data:
-                return float(data["price"])
-            raise ValueError(f"TwelveData error: {data}")
-
-async def get_average_price(symbol: str) -> float:
+# Binance API
+async def get_binance_price(symbol: str) -> float:
     try:
-        b = await get_price_binance(symbol)
-        t = await get_price_twelvedata(symbol)
-        return (b + t) / 2
-    except:
-        return await get_price_binance(symbol)
+        ticker = await client.get_symbol_ticker(symbol=symbol)
+        return float(ticker['price'])
+    except Exception as e:
+        print(f"Binance error: {e}")
+        return None
 
-async def get_price(symbol: str) -> float:
-    if symbol == "USTECH100":
-        return await get_price_twelvedata(symbol)
-    return await get_average_price(symbol)
+# TwelveData API
+async def get_twelvedata_price(symbol: str) -> float:
+    url = f"https://api.twelvedata.com/price?symbol={symbol}&apikey={TWELVE_DATA_API_KEY}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            data = await response.json()
+            return float(data["price"])
 
-# 🎯 Комбинированная стратегия
-async def analyze_signal(symbol: str, strategy_name="MA + RSI + MACD") -> dict:
-    # Упрощенная логика для примера
-    price = await get_price(symbol)
-    signal = {
-        "direction": "Buy" if price % 2 == 0 else "Sell",
-        "accuracy": np.random.uniform(60, 85),
-        "entry": round(price, 2),
+# Финальная функция получения цены
+async def get_price(asset: str) -> float:
+    if asset == "USTECH100":
+        return await get_twelvedata_price("NAS100")
+    elif asset in ["BTCUSD", "XAUUSD"]:
+        binance_symbol = "BTCUSDT" if asset == "BTCUSD" else "XAUUSDT"
+        twelvedata_symbol = "BTC/USD" if asset == "BTCUSD" else "XAU/USD"
+        binance_price = await get_binance_price(binance_symbol)
+        twelve_price = await get_twelvedata_price(twelvedata_symbol)
+        return round((binance_price + twelve_price) / 2, 2)
+    else:
+        return 0.0
+
+# Приветствие
+@router.message(CommandStart())
+async def start_handler(message: types.Message):
+    user_assets[message.from_user.id] = "BTCUSD"
+    user_mute[message.from_user.id] = False
+    user_strategy[message.from_user.id] = "MA + RSI + MACD"
+    user_schedule[message.from_user.id] = {
+        "BTCUSD": {"days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], "hours": [0, 24]},
+        "XAUUSD": {"days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "hours": [0, 24]},
+        "USTECH100": {"days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "hours": [0, 24]},
     }
-    tp_percent = 1.5
-    sl_percent = 0.8
-    signal["tp"] = round(price * (1 + tp_percent / 100 if signal["direction"] == "Buy" else 1 - tp_percent / 100), 2)
-    signal["sl"] = round(price * (1 - sl_percent / 100 if signal["direction"] == "Buy" else 1 + sl_percent / 100), 2)
-    signal["tp_percent"] = tp_percent
-    signal["sl_percent"] = sl_percent
-    return signal
+    await message.answer("Пора выбраться из матрицы", reply_markup=keyboard)
 
-# ⏰ Проверка расписания
-def is_within_schedule(user_id: int) -> bool:
-    now = datetime.datetime.now()
-    weekday = now.strftime('%a')
-    start, end = user_schedule.get(user_id, default_schedule).get(weekday, ('00:00', '23:59'))
-    start_time = datetime.datetime.strptime(start, "%H:%M").time()
-    end_time = datetime.datetime.strptime(end, "%H:%M").time()
-    return start_time <= now.time() <= end_time
+# Обработка кнопок
+@router.message(F.text.in_({"BTCUSD", "XAUUSD", "USTECH100"}))
+async def asset_handler(message: types.Message):
+    user_assets[message.from_user.id] = message.text
+    await message.answer(f"Актив установлен: {message.text}")
 
-# 📡 Отправка сигнала
-async def send_signal(user_id: int, symbol: str, is_manual=False):
-    if not is_within_schedule(user_id):
-        await bot.send_message(user_id, "⏱ Сейчас не торговое время.")
-        return
+@router.message(F.text == "🔕 Mute")
+async def mute(message: types.Message):
+    user_mute[message.from_user.id] = True
+    await message.answer("🔕 Уведомления отключены")
 
-    strategy = user_strategy.get(user_id, "MA + RSI + MACD")
-    signal = await analyze_signal(symbol, strategy)
-    accuracy = signal["accuracy"]
+@router.message(F.text == "🔔 Unmute")
+async def unmute(message: types.Message):
+    user_mute[message.from_user.id] = False
+    await message.answer("🔔 Уведомления включены")
 
-    if accuracy < 60:
-        await bot.send_message(user_id, f"⚠️ Риск велик, не время торговли (точность: {accuracy:.2f}%)")
-        return
-        
-    if is_manual and accuracy < 65:
-        await bot.send_message(user_id, f"❌ Недостаточная точность для ручного сигнала ({accuracy:.2f}%)")
-        return
+@router.message(F.text == "📊 Статус")
+async def status(message: types.Message):
+    asset = user_assets.get(message.from_user.id, "BTCUSD")
+    schedule = user_schedule.get(message.from_user.id, {}).get(asset)
+    days = ", ".join(schedule["days"])
+    hours = f"{schedule['hours'][0]}:00 - {schedule['hours'][1]}:00"
+    await message.answer(f"<b>Текущий актив:</b> {asset}\n<b>Рабочие дни:</b> {days}\n<b>Часы:</b> {hours}")
 
-    if not is_manual and accuracy < 70:
-        return
+# Получение сигнала
+@router.message(F.text == "🔄 Получить сигнал")
+async def get_signal(message: types.Message):
+    asset = user_assets.get(message.from_user.id, "BTCUSD")
+    price = await get_price(asset)
+    if price:
+        await message.answer(f"<b>{asset}</b>\nТекущая цена: {price}")
+    else:
+        await message.answer("❌ Не удалось получить цену")
 
-    msg = (
-        f"📡 <b>AI Trading Signal</b>\n"
-        f"🔹 Актив: <b>{symbol}</b>\n"
-        f"🎯 Направление: <b>{signal['direction']}</b>\n"
-        f"🎯 Вход: <b>{signal['entry']}</b>\n"
-        f"📈 TP: {signal['tp_percent']}% → <b>{signal['tp']}</b>\n"
-        f"📉 SL: {signal['sl_percent']}% → <b>{signal['sl']}</b>\n"
-        f"📊 Точность: <b>{accuracy:.2f}%</b>\n"
-        f"📘 Стратегия: {strategy}"
-    )
-    mute = user_mute.get(user_id, False)
-    await bot.send_message(user_id, msg, parse_mode="HTML", disable_notification=mute)
-
-# 📥 Старт
-@dp.message(commands=["start"])
-async def start_handler(msg: types.Message):
-    user_assets[msg.from_user.id] = "BTCUSDT"
-    user_schedule[msg.from_user.id] = default_schedule.copy()
-    user_strategy[msg.from_user.id] = "MA + RSI + MACD"
-    await msg.answer("🧠 Пора выбраться из матрицы.", reply_markup=main_kb)
-
-# 📲 Обработка кнопок
-@dp.message()
-async def handle_message(msg: types.Message):
-    user_id = msg.from_user.id
-    text = msg.text.strip()
-
-    if text == "🔄 Получить сигнал":
-        asset = user_assets.get(user_id, "BTCUSDT")
-        await send_signal(user_id, asset, is_manual=True)
-
-    elif text in ["BTCUSD", "XAUUSD", "USTECH100"]:
-        mapping = {"BTCUSD": "BTCUSDT", "XAUUSD": "XAUUSD", "USTECH100": "USTECH100"}
-        user_assets[user_id] = mapping[text]
-        await msg.answer(f"✅ Актив установлен: {text}")
-
-    elif text == "🔕 Mute":
-        user_mute[user_id] = True
-        await msg.answer("🔕 Уведомления отключены")
-
-    elif text == "🔔 Unmute":
-        user_mute[user_id] = False
-        await msg.answer("🔔 Уведомления включены")
-
-    elif text == "🎯 Стратегия":
-        current = user_strategy.get(user_id, strategies[0])
-        idx = strategies.index(current)
-        next_strategy = strategies[(idx + 1) % len(strategies)]
-        user_strategy[user_id] = next_strategy
-        await msg.answer(f"🎯 Стратегия выбрана: {next_strategy}")
-
-    elif text == "📅 Статус":
-        sched = user_schedule.get(user_id, default_schedule)
-        lines = [f"{day}: {start} - {end}" for day, (start, end) in sched.items()]
-        await msg.answer("🗓 <b>Торговое расписание:</b>\n" + "\n".join(lines), parse_mode="HTML")
-
-# 🔁 Автосигналы каждые 30 сек
-async def auto_signal_loop():
-    while True:
-        for user_id, asset in user_assets.items():
-            await send_signal(user_id, asset, is_manual=False)
-        await asyncio.sleep(30)
-
-# 🚀 Запуск
+# Запуск
 async def main():
-    asyncio.create_task(auto_signal_loop())
+    global client
+    client = await AsyncClient.create()
+    dp.include_router(router)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
