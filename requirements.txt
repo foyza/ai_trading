@@ -11,3 +11,4 @@ ta==0.11.0
 asyncio==3.4.3
 aiogram==3.3.0
 apscheduler
+yfinance
