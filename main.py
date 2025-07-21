@@ -11,7 +11,7 @@ import yfinance as yf
 
 # Загрузка токена из переменных окружения
 load_dotenv()
-API_TOKEN = os.getenv('BOT_TOKEN')
+API_TOKEN = os.getenv('8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA')
 
 ASSETS = {
     'BTCUSD': 'BTC-USD',
