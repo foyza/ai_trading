@@ -6,19 +6,23 @@ from aiogram import Bot, Dispatcher, executor, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pandas as pd
-import talib
+import numpy as np
 
-API_KEY = "5e5e950fa71c416e9ffdb86fce72dc4f"
-TELEGRAM_TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
+API_KEY = "YOUR_TWELVEDATA_API_KEY"
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot)
 scheduler = AsyncIOScheduler()
 
-# user data: user_id -> settings
 user_data = {}
 
-# --- кнопки ---
+strategies = {
+    "default": "ma_rsi_macd",
+    "ma_rsi_macd": "MA + RSI + MACD",
+    "boll_stoch": "Bollinger + Stochastic"
+}
+
 def main_keyboard(user_id):
     mute = user_data.get(user_id, {}).get("mute", False)
     mute_btn = "🔔 Unmute" if mute else "🔕 Mute"
@@ -33,13 +37,6 @@ def main_keyboard(user_id):
         InlineKeyboardButton("📊 Статус", callback_data="status")
     )
 
-strategies = {
-    "default": "ma_rsi_macd",
-    "ma_rsi_macd": "MA + RSI + MACD",
-    "boll_stoch": "Bollinger + Stochastic"
-}
-
-# --- приветствие ---
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
     user_id = message.from_user.id
@@ -52,14 +49,12 @@ async def start(message: types.Message):
         }
     await message.answer("💊 Пора выбраться из матрицы", reply_markup=main_keyboard(user_id))
 
-# --- переключение mute ---
 @dp.callback_query_handler(lambda c: c.data == "toggle_mute")
 async def toggle_mute(call: types.CallbackQuery):
     user_id = call.from_user.id
     user_data[user_id]["mute"] = not user_data[user_id].get("mute", False)
     await call.message.edit_reply_markup(reply_markup=main_keyboard(user_id))
 
-# --- выбор актива ---
 @dp.callback_query_handler(lambda c: c.data.startswith("set_"))
 async def set_asset(call: types.CallbackQuery):
     user_id = call.from_user.id
@@ -71,7 +66,6 @@ async def set_asset(call: types.CallbackQuery):
     user_data[user_id]["asset"] = asset_map[call.data]
     await call.answer(f"✅ Актив выбран: {asset_map[call.data]}")
 
-# --- статус пользователя ---
 @dp.callback_query_handler(lambda c: c.data == "status")
 async def status(call: types.CallbackQuery):
     user_id = call.from_user.id
@@ -83,7 +77,6 @@ async def status(call: types.CallbackQuery):
         f"Mute: {'On' if data['mute'] else 'Off'}"
     )
 
-# --- выбор стратегии ---
 @dp.callback_query_handler(lambda c: c.data == "choose_strategy")
 async def choose_strategy(call: types.CallbackQuery):
     kb = InlineKeyboardMarkup(row_width=1)
@@ -99,7 +92,6 @@ async def set_strategy(call: types.CallbackQuery):
     user_data[user_id]["strategy"] = strategy_key
     await call.answer(f"✅ Стратегия выбрана: {strategies[strategy_key]}")
 
-# --- получение сигнала ---
 @dp.callback_query_handler(lambda c: c.data == "get_signal")
 async def get_signal(call: types.CallbackQuery):
     user_id = call.from_user.id
@@ -108,7 +100,6 @@ async def get_signal(call: types.CallbackQuery):
     result = await analyze_asset(asset, strategy)
     await call.message.answer(result)
 
-# --- анализ по стратегии ---
 async def analyze_asset(asset, strategy):
     symbol = asset.replace("/", "")
     interval = "15min"
@@ -121,12 +112,13 @@ async def analyze_asset(asset, strategy):
         return "⚠️ Ошибка загрузки данных"
 
     df = pd.DataFrame(raw["values"])
-    df = df.iloc[::-1].astype(float)
+    df = df.iloc[::-1]
+    df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].astype(float)
 
     if strategy == "ma_rsi_macd":
-        signal, confidence = ma_rsi_macd_strategy(df)
+        signal, confidence = ma_rsi_macd(df)
     else:
-        signal, confidence = boll_stoch_strategy(df)
+        signal, confidence = boll_stoch(df)
 
     if confidence < 60:
         return f"⚠️ Риск велик, не время торговли (точность: {confidence:.1f}%)"
@@ -146,12 +138,25 @@ async def analyze_asset(asset, strategy):
         f"🎯 Точность прогноза: {confidence:.1f}%"
     )
 
-# --- стратегии ---
-def ma_rsi_macd_strategy(df):
-    ma10 = talib.MA(df['close'], timeperiod=10)
-    ma50 = talib.MA(df['close'], timeperiod=50)
-    rsi = talib.RSI(df['close'], timeperiod=14)
-    macd, _, _ = talib.MACD(df['close'])
+# === STRATEGIES ===
+
+def ma_rsi_macd(df):
+    close = df['close']
+
+    ma10 = close.rolling(window=10).mean()
+    ma50 = close.rolling(window=50).mean()
+
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
 
     buy = ma10.iloc[-1] > ma50.iloc[-1] and rsi.iloc[-1] < 70 and macd.iloc[-1] > 0
     sell = ma10.iloc[-1] < ma50.iloc[-1] and rsi.iloc[-1] > 30 and macd.iloc[-1] < 0
@@ -160,23 +165,34 @@ def ma_rsi_macd_strategy(df):
     signal = "Buy" if buy else "Sell" if sell else "Hold"
     return signal, confidence
 
-def boll_stoch_strategy(df):
-    upper, middle, lower = talib.BBANDS(df['close'])
-    slowk, slowd = talib.STOCH(df['high'], df['low'], df['close'])
-    buy = df['close'].iloc[-1] < lower.iloc[-1] and slowk.iloc[-1] < 20
-    sell = df['close'].iloc[-1] > upper.iloc[-1] and slowk.iloc[-1] > 80
+def boll_stoch(df):
+    close = df['close']
+    high = df['high']
+    low = df['low']
+
+    mid = close.rolling(window=20).mean()
+    std = close.rolling(window=20).std()
+    upper = mid + 2 * std
+    lower = mid - 2 * std
+
+    low_14 = low.rolling(window=14).min()
+    high_14 = high.rolling(window=14).max()
+    stoch_k = 100 * ((close - low_14) / (high_14 - low_14))
+
+    buy = close.iloc[-1] < lower.iloc[-1] and stoch_k.iloc[-1] < 20
+    sell = close.iloc[-1] > upper.iloc[-1] and stoch_k.iloc[-1] > 80
 
     confidence = 75 if buy or sell else 50
     signal = "Buy" if buy else "Sell" if sell else "Hold"
     return signal, confidence
 
-# --- запуск планировщика ---
+# === SCHEDULER PLACEHOLDER ===
 async def scheduler_start():
     scheduler.start()
-    # Здесь можно добавить авто-сигналы по расписанию
+    # можно настроить расписание для отправки автоматических сигналов
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     loop = asyncio.get_event_loop()
     loop.create_task(scheduler_start())
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling
