@@ -51,19 +51,20 @@ async def get_price_data(asset: str):
     symbol_map = {
         "BTCUSD": "BTC/USD",
         "XAUUSD": "XAU/USD",
-        "USTECH100": "NDX"
+        "USTECH100": "NASDAQ100"  # ИСПРАВЛЕНИЕ: правильный символ
     }
     symbol = symbol_map.get(asset, "BTC/USD")
 
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=1min&outputsize=100&apikey={TWELVE_API_KEY}"
+    url = (
+        f"https://api.twelvedata.com/time_series"
+        f"?symbol={symbol}&interval=1min&outputsize=100&apikey={TWELVE_API_KEY}"
+    )
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
             data = await resp.json()
-            try:
-                closes = [float(i["close"]) for i in data["values"]][::-1]
-                return closes
-            except Exception:
+            if "values" not in data or not data["values"]:
                 return []
+            return [float(bar["close"]) for bar in reversed(data["values"])]
 
 
 # === Анализ стратегии ===
