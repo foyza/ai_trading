@@ -104,7 +104,6 @@ async def send_signal(user_id, symbol):
         return
     elif acc >= 65:
         text = (
-           text = (
     f"<b>📊 Сигнал по {symbol}</b>\n"
     f"Направление: <b>{signal['direction']}</b>\n"
     f"Цена входа: <b>{signal['entry']}</b>\n"
