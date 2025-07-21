@@ -100,7 +100,7 @@ async def start(message: types.Message):
             "NAS100": "00:00-23:59"
         }
     }
-    await message.answer("👋 Пора выбраться из матрицы", reply_markup=main_keyboard)
+    await message.answer("Пора выбраться из матрицы", reply_markup=main_keyboard)
 
 # Обработка кнопок
 @dp.message()
