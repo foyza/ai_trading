@@ -24,7 +24,7 @@ def get_main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🔄 Получить сигнал")],
-            [KeyboardButton(text="BTCUSD"), KeyboardButton(text="XAUUSD"), KeyboardButton(text="USTECH100")],
+            [KeyboardButton(text="BTC/USD"), KeyboardButton(text="XAU/USD"), KeyboardButton(text="NAS100")],
             [KeyboardButton(text="🔕 Mute"), KeyboardButton(text="🔔 Unmute")],
             [KeyboardButton(text="🎯 Стратегия"), KeyboardButton(text="🕒 Расписание")],
             [KeyboardButton(text="📊 Статус")]
