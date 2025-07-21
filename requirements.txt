@@ -6,3 +6,4 @@ python-binance
 requests
 python-dotenv
 httpx
+scikit-learn==1.4.2
