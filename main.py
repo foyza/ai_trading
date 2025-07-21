@@ -10,11 +10,7 @@ import pandas as pd
 
 TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
 TWELVEDATA_API_KEY = "5e5e950fa71c416e9ffdb86fce72dc4f"
-ASSETS = {
-    "BTCUSD": "BTC/USD",
-    "XAUUSD": "XAU/USD",
-    "USTECH100": "NAS100"
-}
+ASSETS = ['BTC/USD', 'XAU/USD', 'NAS100']
 
 dp = Dispatcher()
 bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
@@ -41,7 +37,7 @@ async def get_twelvedata(asset: str):
     import aiohttp
     import pandas as pd
 
-    symbol = ASSETS.get(asset, asset)
+    symbol = asset
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=50&apikey=5e5e950fa71c416e9ffdb86fce72dc4f"
 
     async with aiohttp.ClientSession() as session:
@@ -112,8 +108,8 @@ async def send_signal(user_id, asset):
         return
 
     tp_pct, sl_pct = 2.0, 1.0
-    tp_price = round(price * (1 + tp_pct/100), 2) if direction == "buy" else round(price * (1 - tp_pct/100), 2)
-    sl_price = round(price * (1 - sl_pct/100), 2) if direction == "buy" else round(price * (1 + sl_pct/100), 2)
+    tp_price = round(price * (1 + tp_pct / 100), 2) if direction == "buy" else round(price * (1 - tp_pct / 100), 2)
+    sl_price = round(price * (1 - sl_pct / 100), 2) if direction == "buy" else round(price * (1 + sl_pct / 100), 2)
 
     msg = (
         f"📈 Сигнал: <b>{direction.upper()}</b>\n"
@@ -128,7 +124,7 @@ async def send_signal(user_id, asset):
 # Команда /start
 @dp.message(CommandStart())
 async def start(message: types.Message):
-    user_settings[message.from_user.id] = {"asset": "BTCUSD", "muted": False, "strategy": "ma+rsi+macd"}
+    user_settings[message.from_user.id] = {"asset": "BTC/USD", "muted": False, "strategy": "ma+rsi+macd"}
     await message.answer("Пора выбраться из матрицы", reply_markup=get_main_keyboard())
 
 # Обработка кнопок
@@ -137,7 +133,7 @@ async def handle_buttons(message: types.Message):
     uid = message.from_user.id
     text = message.text
     if uid not in user_settings:
-        user_settings[uid] = {"asset": "BTCUSD", "muted": False, "strategy": "ma+rsi+macd"}
+        user_settings[uid] = {"asset": "BTC/USD", "muted": False, "strategy": "ma+rsi+macd"}
 
     if text == "🔄 Получить сигнал":
         await send_signal(uid, user_settings[uid]["asset"])
