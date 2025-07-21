@@ -10,7 +10,7 @@ import pandas as pd
 
 TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
 TWELVEDATA_API_KEY = "5e5e950fa71c416e9ffdb86fce72dc4f"
-ASSETS = ['BTC/USD', 'XAU/USD', 'NAS100']
+ASSETS = ['BTC/USD', 'XAU/USD', 'NDX']
 
 dp = Dispatcher()
 bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
@@ -24,7 +24,7 @@ def get_main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🔄 Получить сигнал")],
-            [KeyboardButton(text="BTC/USD"), KeyboardButton(text="XAU/USD"), KeyboardButton(text="NAS100")],
+            [KeyboardButton(text="BTC/USD"), KeyboardButton(text="XAU/USD"), KeyboardButton(text="NDX")],
             [KeyboardButton(text="🔕 Mute"), KeyboardButton(text="🔔 Unmute")],
             [KeyboardButton(text="🎯 Стратегия"), KeyboardButton(text="🕒 Расписание")],
             [KeyboardButton(text="📊 Статус")]
@@ -33,32 +33,27 @@ def get_main_keyboard():
     )
 
 # Получение OHLCV данных от TwelveData
-async def get_twelvedata(asset: str):
-    import aiohttp
-    import pandas as pd
-
-    symbol = asset
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=50&apikey=5e5e950fa71c416e9ffdb86fce72dc4f"
-
+async def get_twelvedata(asset):
+    symbol = TWELVE_SYMBOLS.get(asset)
+    if not symbol:
+        raise ValueError(f"Неизвестный актив для TwelveData: {asset}")
+    
+    url = f"https://api.twelvedata.com/time_series"
+    params = {
+        "symbol": symbol,
+        "interval": "1min",
+        "outputsize": 50,
+        "apikey": "5e5e950fa71c416e9ffdb86fce72dc4f",
+    }
     async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            data = await resp.json()
-
-    if "values" not in data:
-        raise ValueError(f"TwelveData API вернул ошибку: {data.get('message', 'нет данных')}")
-
-    df = pd.DataFrame(data["values"])
-    df = df[::-1]  # сортируем от старого к новому
-
-    # Приводим нужные столбцы к числовому типу, если они есть
-    for col in ["open", "high", "low", "close", "volume"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        else:
-            df[col] = 0  # или np.nan — как тебе удобнее
-
-    df.dropna(inplace=True)
-    return df
+        async with session.get(url, params=params) as response:
+            data = await response.json()
+            if "values" not in data:
+                raise ValueError(f"TwelveData API вернул ошибку: {data.get('message', 'нет данных')}")
+            df = pd.DataFrame(data["values"])
+            df["datetime"] = pd.to_datetime(df["datetime"])
+            df = df.sort_values("datetime")
+            return df
 
 # Стратегия: MA + RSI + MACD
 def analyze(df):
@@ -136,7 +131,7 @@ async def handle_buttons(message: types.Message):
         user_settings[uid] = {"asset": "BTC/USD", "muted": False, "strategy": "ma+rsi+macd"}
 
     if text == "🔄 Получить сигнал":
-        await send_signal(uid, user_settings[uid]["asset"])
+        await send_signal(uid, user_settings[uid]["asset"], manual=True)
     elif text in ASSETS:
         user_settings[uid]["asset"] = text
         await message.answer(f"✅ Актив установлен: {text}")
