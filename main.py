@@ -3,12 +3,17 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.enums.parse_mode import ParseMode
 import aiohttp
-import datetime
 import logging
 import numpy as np
+import pandas as pd
+from dotenv import load_dotenv
+import os
 
-API_TOKEN = '8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA'
-TWELVEDATA_API_KEY = '5e5e950fa71c416e9ffdb86fce72dc4f'
+# Загрузка токенов
+load_dotenv()
+API_TOKEN = os.getenv('BOT_TOKEN')
+TWELVEDATA_API_KEY = os.getenv('TWELVEDATA_API_KEY')
+
 ASSETS = {
     'BTCUSD': 'BTC/USD',
     'XAUUSD': 'XAU/USD',
@@ -29,7 +34,7 @@ main_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="📊 Статус")]
 ], resize_keyboard=True)
 
-# Приветствие
+# Команды
 @dp.message(F.text == "/start")
 async def start_handler(msg: types.Message):
     user_settings[msg.from_user.id] = {
@@ -39,7 +44,6 @@ async def start_handler(msg: types.Message):
     }
     await msg.answer("Пора выбраться из матрицы", reply_markup=main_kb)
 
-# Обработка всех кнопок
 @dp.message(F.text.in_(['BTCUSD', 'XAUUSD', 'USTECH100']))
 async def asset_select(msg: types.Message):
     user_settings[msg.from_user.id]['asset'] = msg.text
@@ -88,39 +92,58 @@ async def manual_signal(msg: types.Message):
 # Сигналы
 async def generate_signal(symbol: str, strategy: str):
     prices = await get_prices(symbol)
-    if not prices:
+    if not prices or len(prices) < 50:
         return {'accuracy': 0}
 
-    ma10 = np.mean(prices[-10:])
-    ma50 = np.mean(prices[-50:])
-    rsi = calculate_rsi(prices)
-    macd, signal_macd = calculate_macd(prices)
+    if strategy == "MA+RSI+MACD":
+        ma10 = np.mean(prices[-10:])
+        ma50 = np.mean(prices[-50:])
+        rsi = calculate_rsi(prices)
+        macd, signal_macd = calculate_macd(prices)
 
-    buy_count = 0
-    sell_count = 0
+        buy_count = 0
+        sell_count = 0
 
-    if ma10 > ma50:
-        buy_count += 1
-    else:
-        sell_count += 1
+        if ma10 > ma50:
+            buy_count += 1
+        else:
+            sell_count += 1
 
-    if rsi < 30:
-        buy_count += 1
-    elif rsi > 70:
-        sell_count += 1
+        if rsi < 30:
+            buy_count += 1
+        elif rsi > 70:
+            sell_count += 1
 
-    if macd > signal_macd:
-        buy_count += 1
-    else:
-        sell_count += 1
+        if macd > signal_macd:
+            buy_count += 1
+        else:
+            sell_count += 1
 
-    agree = buy_count == 3 or sell_count == 3
-    accuracy = 75 if agree else 50 if buy_count + sell_count == 2 else 40
+        agree = buy_count == 3 or sell_count == 3
+        accuracy = 75 if agree else 50 if buy_count + sell_count == 2 else 40
 
-    if not agree:
-        return {'accuracy': accuracy}
+        if not agree:
+            return {'accuracy': accuracy}
 
-    direction = "Buy" if buy_count == 3 else "Sell"
+        direction = "Buy" if buy_count == 3 else "Sell"
+
+    else:  # Bollinger+Volume
+        df = pd.Series(prices)
+        ma = df.rolling(window=20).mean()
+        std = df.rolling(window=20).std()
+        upper = ma + 2 * std
+        lower = ma - 2 * std
+        price = df.iloc[-1]
+
+        if price > upper.iloc[-1]:
+            direction = "Sell"
+        elif price < lower.iloc[-1]:
+            direction = "Buy"
+        else:
+            return {'accuracy': 50}
+
+        accuracy = 70
+
     entry_price = round(prices[-1], 2)
     tp = round(entry_price * (1.02 if direction == "Buy" else 0.98), 2)
     sl = round(entry_price * (0.985 if direction == "Buy" else 1.015), 2)
@@ -144,7 +167,6 @@ def format_signal(s):
 🛑 SL: -{s['sl_percent']}% → <code>{s['sl_price']}</code>
 ✅ Точность прогноза: <b>{s['accuracy']}%</b>"""
 
-# Индикаторы
 def calculate_rsi(prices, period=14):
     deltas = np.diff(prices)
     seed = deltas[:period]
@@ -154,14 +176,13 @@ def calculate_rsi(prices, period=14):
     return 100 - (100 / (1 + rs))
 
 def calculate_macd(prices):
-    exp1 = np.array(prices).copy()
-    exp1 = np.convolve(exp1, np.ones(12)/12, mode='valid')
-    exp2 = np.convolve(prices, np.ones(26)/26, mode='valid')
-    macd = exp1[-1] - exp2[-1]
-    signal = np.convolve(macd if isinstance(macd, list) else [macd], np.ones(9)/9, mode='valid')[-1]
-    return macd, signal
+    df = pd.Series(prices)
+    ema12 = df.ewm(span=12, adjust=False).mean()
+    ema26 = df.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9, adjust=False).mean()
+    return macd.iloc[-1], signal.iloc[-1]
 
-# Цены с TwelveData
 async def get_prices(asset: str):
     interval = "1min"
     url = f"https://api.twelvedata.com/time_series?symbol={ASSETS[asset]}&interval={interval}&apikey={TWELVEDATA_API_KEY}&outputsize=50"
@@ -177,7 +198,7 @@ async def get_prices(asset: str):
         print("Ошибка получения данных:", e)
         return []
 
-# Автосигналы
+# Авторассылка
 async def auto_signal_sender():
     while True:
         await asyncio.sleep(60)
@@ -192,6 +213,7 @@ async def auto_signal_sender():
                 except:
                     continue
 
+# Запуск
 async def main():
     asyncio.create_task(auto_signal_sender())
     await dp.start_polling(bot)
