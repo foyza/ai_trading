@@ -2,30 +2,29 @@ import asyncio
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.enums.parse_mode import ParseMode
-import aiohttp
 import logging
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 import os
+import yfinance as yf
 
-# Загрузка токенов
+# Загрузка токена из переменных окружения
 load_dotenv()
-API_TOKEN = '8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA'
-TWELVEDATA_API_KEY = os.getenv('5e5e950fa71c416e9ffdb86fce72dc4f')
+API_TOKEN = os.getenv('BOT_TOKEN')
 
 ASSETS = {
-    'BTCUSD': 'BTC/USD',
-    'XAUUSD': 'XAU/USD',
-    'USTECH100': 'NAS100'
+    'BTCUSD': 'BTC-USD',
+    'XAUUSD': 'GC=F',
+    'USTECH100': '^NDX'
 }
 
-user_settings = {}  # user_id: {'asset': 'BTCUSD', 'mute': False, 'strategy': 'MA+RSI+MACD'}
+user_settings = {}
 
 bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 
-# Кнопки
+# Клавиатура
 main_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="🔄 Получить сигнал")],
     [KeyboardButton(text="BTCUSD"), KeyboardButton(text="XAUUSD"), KeyboardButton(text="USTECH100")],
@@ -34,7 +33,6 @@ main_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="📊 Статус")]
 ], resize_keyboard=True)
 
-# Команды
 @dp.message(F.text == "/start")
 async def start_handler(msg: types.Message):
     user_settings[msg.from_user.id] = {
@@ -89,7 +87,6 @@ async def manual_signal(msg: types.Message):
     elif signal['accuracy'] < 60:
         await msg.answer(f"⚠️ Риск велик, не время торговли (точность: {signal['accuracy']}%)")
 
-# Сигналы
 async def generate_signal(symbol: str, strategy: str):
     prices = await get_prices(symbol)
     if not prices or len(prices) < 50:
@@ -183,22 +180,16 @@ def calculate_macd(prices):
     signal = macd.ewm(span=9, adjust=False).mean()
     return macd.iloc[-1], signal.iloc[-1]
 
-async def get_prices(asset: str):
-    interval = "1min"
-    url = f"https://api.twelvedata.com/time_series?symbol={ASSETS[asset]}&interval={interval}&apikey={TWELVEDATA_API_KEY}&outputsize=50"
+async def get_prices(symbol: str):
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                js = await resp.json()
-                if 'values' not in js:
-                    return []
-                closes = [float(x['close']) for x in reversed(js['values'])]
-                return closes
+        data = yf.download(tickers=symbol, interval="1m", period="1d")
+        if data.empty:
+            return []
+        return data['Close'].tolist()
     except Exception as e:
         print("Ошибка получения данных:", e)
         return []
 
-# Авторассылка
 async def auto_signal_sender():
     while True:
         await asyncio.sleep(60)
@@ -213,7 +204,6 @@ async def auto_signal_sender():
                 except:
                     continue
 
-# Запуск
 async def main():
     asyncio.create_task(auto_signal_sender())
     await dp.start_polling(bot)
