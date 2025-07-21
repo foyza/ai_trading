@@ -11,7 +11,7 @@ import os
 
 # Загрузка токенов
 load_dotenv()
-API_TOKEN = os.getenv('8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA')
+API_TOKEN = '8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA'
 TWELVEDATA_API_KEY = os.getenv('5e5e950fa71c416e9ffdb86fce72dc4f')
 
 ASSETS = {
