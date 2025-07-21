@@ -121,7 +121,7 @@ async def handle_buttons(message: types.Message):
     elif "-" in text and ":" in text:
         symbol = user_states[user_id]["symbol"]
         user_states[user_id]["schedule"][symbol] = text
-await message.answer(f"🕒 Время торговли для {symbol} установлено: {text}")
+        await message.answer(f"🕒 Время торговли для {symbol} установлено: {text}")
 
 # Обработка сигнала
 async def handle_signal_request(message):
