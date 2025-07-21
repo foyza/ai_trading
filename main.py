@@ -1,132 +1,146 @@
-import asyncio
 import logging
+import asyncio
+import requests
+import pandas as pd
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.filters import CommandStart
-import random
-import aiohttp
-from binance import AsyncClient
+from aiogram.enums import ParseMode
 
-API_TOKEN = '8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA'
-TWELVE_DATA_KEY = '5e5e950fa71c416e9ffdb86fce72dc4f'
+# === Настройки ===
+BOT_TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
+TWELVE_DATA_API_KEY = "5e5e950fa71c416e9ffdb86fce72dc4f"
+USELESS_THRESHOLD = 0.6
+SIGNAL_THRESHOLD = 0.7
 
-bot = Bot(token=API_TOKEN, parse_mode='HTML')
+# === Логгинг и запуск ===
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
-active_asset = 'BTCUSDT'
-mute_mode = False
+mute_users = set()
+last_signals = {}
 
-assets = {
-    'BTCUSDT': {'binance_symbol': 'BTCUSDT', 'twelve_symbol': 'BTC/USD'},
-    'XAUUSD': {'binance_symbol': 'XAUUSDT', 'twelve_symbol': 'XAU/USD'},
-    'NAS100': {'binance_symbol': None, 'twelve_symbol': 'NAS100'}
-}
+# === Клавиатура ===
+def main_keyboard():
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="🔄 Получить сигнал")],
+        [KeyboardButton(text="BTCUSDT"), KeyboardButton(text="XAUUSD"), KeyboardButton(text="NAS100")],
+        [KeyboardButton(text="🔇 Mute"), KeyboardButton(text="🔔 Unmute")]
+    ], resize_keyboard=True)
 
-keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text='🔄 Получить сигнал')],
-        [KeyboardButton(text='BTCUSDT'), KeyboardButton(text='XAUUSD'), KeyboardButton(text='NAS100')],
-        [KeyboardButton(text='🔇 Mute'), KeyboardButton(text='🔊 Unmute')]
-    ],
-    resize_keyboard=True
-)
+# === Получение данных Binance ===
+def get_binance_data(symbol='BTCUSDT', interval='15m', limit=100):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    response = requests.get(url, timeout=10)
+    data = response.json()
+    df = pd.DataFrame(data, columns=[
+        'time', 'open', 'high', 'low', 'close', 'volume',
+        'close_time', 'qav', 'trades', 'tb_base', 'tb_quote', 'ignore'
+    ])
+    df['close'] = df['close'].astype(float)
+    df['time'] = pd.to_datetime(df['time'], unit='ms')
+    return df[['time', 'close']]
 
-def simulate_model_prediction():
-    direction = random.choice(['Buy', 'Sell'])
-    confidence = round(random.uniform(55, 85), 2)
-    tp_pct = round(random.uniform(1.2, 3), 2)
-    sl_pct = round(random.uniform(0.8, 2), 2)
-    return direction, confidence, tp_pct, sl_pct
+# === Получение данных с TwelveData (только для NAS100) ===
+def get_twelvedata(symbol='NAS100', interval='15min', apikey=TWELVE_DATA_API_KEY):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=100&apikey={apikey}"
+    response = requests.get(url, timeout=10).json()
+    if 'values' not in response:
+        return None
+    df = pd.DataFrame(response['values'])
+    df['datetime'] = pd.to_datetime(df['datetime'])
+    df['close'] = df['close'].astype(float)
+    df = df.sort_values(by='datetime')
+    return df[['datetime', 'close']].rename(columns={'datetime': 'time'})
 
-async def get_binance_price(symbol):
-    try:
-        client = await AsyncClient.create()
-        ticker = await client.get_symbol_ticker(symbol=symbol)
-        await client.close_connection()
-        return float(ticker['price'])
-    except Exception as e:
-        logging.error(f"Binance price error: {e}")
+# === Расчёт сигнала по MA10/MA50 ===
+def calculate_ma_signal(df):
+    df['MA10'] = df['close'].rolling(window=10).mean()
+    df['MA50'] = df['close'].rolling(window=50).mean()
+
+    if df['MA10'].iloc[-2] < df['MA50'].iloc[-2] and df['MA10'].iloc[-1] > df['MA50'].iloc[-1]:
+        return 'Buy'
+    elif df['MA10'].iloc[-2] > df['MA50'].iloc[-2] and df['MA10'].iloc[-1] < df['MA50'].iloc[-1]:
+        return 'Sell'
+    else:
         return None
 
-async def get_twelve_data_price(symbol):
+# === Получить сигнал по активу ===
+def get_signal(asset: str):
     try:
-        url = f'https://api.twelvedata.com/price?symbol={symbol}&apikey={TWELVE_DATA_KEY}'
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                data = await resp.json()
-                return float(data['price']) if 'price' in data else None
+        if asset == 'NAS100':
+            df = get_twelvedata(symbol='NAS100')
+        else:
+            df = get_binance_data(symbol=asset)
+        if df is None or len(df) < 50:
+            return None, "❌ Недостаточно данных для анализа"
+        
+        signal = calculate_ma_signal(df)
+        if not signal:
+            return None, "⚠️ Нет чёткого сигнала на данный момент"
+
+        price = df['close'].iloc[-1]
+        tp = round(price * 1.01, 2)
+        sl = round(price * 0.99, 2)
+
+        return signal, (
+            f"<b>{asset}</b>\n"
+            f"🔮 Сигнал: <b>{signal}</b>\n"
+            f"🎯 Вход: <b>{price}</b>\n"
+            f"✅ TP (1%): <b>{tp}</b>\n"
+            f"🛑 SL (1%): <b>{sl}</b>"
+        )
     except Exception as e:
-        logging.error(f"TwelveData error: {e}")
-        return None
+        return None, f"❌ Ошибка: {e}"
 
-async def get_current_price(symbol_key):
-    asset_info = assets[symbol_key]
-    binance_price = await get_binance_price(asset_info['binance_symbol']) if asset_info['binance_symbol'] else None
-    twelve_price = await get_twelve_data_price(asset_info['twelve_symbol'])
-    prices = [p for p in [binance_price, twelve_price] if p]
-    return round(sum(prices) / len(prices), 2) if prices else None
-
-def build_signal_message(direction, price, tp_pct, sl_pct, confidence):
-    tp_price = round(price * (1 + tp_pct / 100), 2) if direction == 'Buy' else round(price * (1 - tp_pct / 100), 2)
-    sl_price = round(price * (1 - sl_pct / 100), 2) if direction == 'Buy' else round(price * (1 + sl_pct / 100), 2)
-    return (
-        f"<b>📊 Новый сигнал по {active_asset}</b>\n"
-        f"📈 Направление: <b>{direction}</b>\n"
-        f"🎯 Точность: <b>{confidence}%</b>\n"
-        f"💰 Цена входа: <b>{price}</b>\n"
-        f"✅ TP: <b>{tp_pct}%</b> → <b>{tp_price}</b>\n"
-        f"❌ SL: <b>{sl_pct}%</b> → <b>{sl_price}</b>"
-    )
-
-async def send_signal(chat_id):
-    direction, confidence, tp_pct, sl_pct = simulate_model_prediction()
-    price = await get_current_price(active_asset)
-
-    if not price:
-        await bot.send_message(chat_id, "❌ Не удалось получить цену актива.")
-        return
-
-    if confidence < 60:
-        await bot.send_message(chat_id, f"⚠️ Риск велик, не время торговли ({confidence}%)")
-        return
-
-    if confidence >= 65:
-        message = build_signal_message(direction, price, tp_pct, sl_pct, confidence)
-        await bot.send_message(chat_id, message, disable_notification=mute_mode)
-
-@dp.message(CommandStart())
-async def start(message: types.Message):
-    await message.answer("Пора выбраться из матрицы", reply_markup=keyboard)
-
+# === Команды и обработка ===
 @dp.message()
 async def handle_message(message: types.Message):
-    global active_asset, mute_mode
+    user_id = message.from_user.id
+    text = message.text.strip()
 
-    if message.text == '🔄 Получить сигнал':
-        await send_signal(message.chat.id)
-    elif message.text in assets:
-        active_asset = message.text
-        await message.answer(f"✅ Актив установлен: <b>{active_asset}</b>")
-    elif message.text == '🔇 Mute':
-        mute_mode = True
-        await message.answer("🔕 Режим Mute включён.")
-    elif message.text == '🔊 Unmute':
-        mute_mode = False
-        await message.answer("🔔 Звуковые уведомления включены.")
+    if text == '/start':
+        await message.answer("Пора выбраться из матрицы. Выбери актив или запроси сигнал:", reply_markup=main_keyboard())
+        return
 
+    if text == "🔇 Mute":
+        mute_users.add(user_id)
+        await message.answer("🔕 Уведомления отключены.")
+        return
+
+    if text == "🔔 Unmute":
+        mute_users.discard(user_id)
+        await message.answer("🔔 Уведомления включены.")
+        return
+
+    if text == "🔄 Получить сигнал":
+        asset = last_signals.get(user_id, 'BTCUSDT')
+        signal, msg = get_signal(asset)
+        if signal:
+            await message.answer(msg, disable_notification=(user_id in mute_users))
+        else:
+            await message.answer(msg)
+        return
+
+    if text in ['BTCUSDT', 'XAUUSD', 'NAS100']:
+        last_signals[user_id] = text
+        await message.answer(f"✅ Актив установлен: <b>{text}</b>")
+        return
+
+# === Автоматическая проверка сигналов (каждые 2 минуты) ===
 async def auto_signal_loop():
+    await bot.send_message(813631865, "✅ Автоматическая проверка сигналов запущена.")
     while True:
-        direction, confidence, tp_pct, sl_pct = simulate_model_prediction()
-        price = await get_current_price(active_asset)
-        if confidence >= 70 and price:
-            message = build_signal_message(direction, price, tp_pct, sl_pct, confidence)
-            await bot.send_message(chat_id='813631865', text=message, disable_notification=mute_mode)
-        await asyncio.sleep(20)
+        for asset in ['BTCUSDT', 'XAUUSD', 'NAS100']:
+            signal, msg = get_signal(asset)
+            if signal:
+                for user_id in last_signals:
+                    await bot.send_message(user_id, msg, disable_notification=(user_id in mute_users))
+        await asyncio.sleep(120)
 
+# === Старт ===
 async def main():
     asyncio.create_task(auto_signal_loop())
     await dp.start_polling(bot)
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+if __name__ == '__main__':
     asyncio.run(main())
-        
