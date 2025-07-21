@@ -33,20 +33,32 @@ def get_main_keyboard():
     )
 
 # Получение OHLCV данных от TwelveData
-async def get_twelvedata(asset):
-    interval = "15min"
-    url = f"https://api.twelvedata.com/time_series?symbol={asset}&interval={interval}&outputsize=100&apikey={TWELVEDATA_API_KEY}"
+async def get_twelvedata(asset: str):
+    import aiohttp
+    import pandas as pd
+
+    symbol = ASSETS.get(asset, asset)
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=50&apikey=5e5e950fa71c416e9ffdb86fce72dc4f"
+
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
             data = await resp.json()
-            if "values" not in data:
-                return None
-            df = pd.DataFrame(data["values"])
-            df = df.rename(columns={"datetime": "time", "open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume"})
-            df = df.iloc[::-1]  # в хронологический порядок
-            for col in ["open", "high", "low", "close", "volume"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-            return df
+
+    if "values" not in data:
+        raise ValueError(f"TwelveData API вернул ошибку: {data.get('message', 'нет данных')}")
+
+    df = pd.DataFrame(data["values"])
+    df = df[::-1]  # сортируем от старого к новому
+
+    # Приводим нужные столбцы к числовому типу, если они есть
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        else:
+            df[col] = 0  # или np.nan — как тебе удобнее
+
+    df.dropna(inplace=True)
+    return df
 
 # Стратегия: MA + RSI + MACD
 def analyze(df):
