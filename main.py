@@ -104,24 +104,26 @@ async def send_signal(user_id, symbol):
         return
     elif acc >= 65:
         text = (
-            f"<b>📊 Сигнал по {symbol}</b>\n"
-            f"Направление: <b>{signal['direction']}</b>\n"
-            f"Цена входа: <b>{signal['entry']}</b>\n"
-            f"🎯 TP: {signal['tp_percent']}% ({signal['tp_price']})\n"
-            f"🛑 SL: {signal['sl_percent']}% ({signal['sl_price']})\n"
-            f"🎯 Точность прогноза: <b>{acc}%</b>"
-        )
-        await bot.send_message(chat_id=user_id, text="✅ Сигнал отправлен.")
-send_message(user_id, text)
+           text = (
+    f"<b>📊 Сигнал по {symbol}</b>\n"
+    f"Направление: <b>{signal['direction']}</b>\n"
+    f"Цена входа: <b>{signal['entry']}</b>\n"
+    f"🎯 TP: {signal['tp_percent']}% ({signal['tp_price']})\n"
+    f"🛑 SL: {signal['sl_percent']}% ({signal['sl_price']})\n"
+    f"🎯 Точность прогноза: <b>{acc}%</b>"
+)
 
-        # Проверка на пробитие TP/SL (эмуляция)
-        current_price = df["close"].iloc[-1]
-        if (signal["direction"] == "Buy" and current_price >= signal["tp_price"]) or \
-           (signal["direction"] == "Sell" and current_price <= signal["tp_price"]):
-            await bot.send_message(user_id, "✅ TP достигнут!")
-        elif (signal["direction"] == "Buy" and current_price <= signal["sl_price"]) or \
-             (signal["direction"] == "Sell" and current_price >= signal["sl_price"]):
-            await bot.send_message(user_id, "❌ SL сработал!")
+await bot.send_message(chat_id=user_id, text=text, parse_mode="HTML")
+await bot.send_message(chat_id=user_id, text="✅ Сигнал отправлен.")
+
+# Проверка на пробитие TP/SL (эмуляция)
+current_price = df["close"].iloc[-1]
+if (signal["direction"] == "Buy" and current_price >= signal["tp_price"]) or \
+   (signal["direction"] == "Sell" and current_price <= signal["tp_price"]):
+    await bot.send_message(chat_id=user_id, text="✅ TP достигнут!")
+elif (signal["direction"] == "Buy" and current_price <= signal["sl_price"]) or \
+     (signal["direction"] == "Sell" and current_price >= signal["sl_price"]):
+    await bot.send_message(chat_id=user_id, text="❌ SL сработал!")
 
 # === ХЭНДЛЕРЫ ===
 @dp.message(CommandStart())
