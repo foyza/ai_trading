@@ -111,7 +111,7 @@ async def send_signal(user_id, symbol):
             f"🛑 SL: {signal['sl_percent']}% ({signal['sl_price']})\n"
             f"🎯 Точность прогноза: <b>{acc}%</b>"
         )
-        await bot.
+        await bot.send_message(chat_id=user_id, text="✅ Сигнал отправлен.")
 send_message(user_id, text)
 
         # Проверка на пробитие TP/SL (эмуляция)
