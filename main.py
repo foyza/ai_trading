@@ -114,7 +114,6 @@ async def send_signal(message, manual=False):
         return
         
 accuracy, direction, tp_pct, sl_pct = generate_signal()
-
     if manual and accuracy < 65:
         await message.answer(f"⚠️ Риск велик, не время торговли ({accuracy}%)")
         return
