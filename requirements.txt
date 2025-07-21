@@ -7,3 +7,5 @@ requests
 python-dotenv
 httpx
 scikit-learn==1.4.2
+ta==0.11.0
+asyncio==3.4.3
