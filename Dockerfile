@@ -1,21 +1,16 @@
-FROM python:3.11-slim
+FROM python:3.10-slim
+
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libffi-dev \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY . /app
+COPY . .
 
-RUN apt-get update && apt-get install -y \
-    gcc g++ \
-    libatlas-base-dev \
-    libblas-dev \
-    liblapack-dev \
-    gfortran \
-    python3-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip install --upgrade pip setuptools wheel
-
+RUN pip install --upgrade pip
 RUN pip install -r requirements.txt
 
 CMD ["python", "main.py"]
-
