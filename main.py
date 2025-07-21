@@ -10,7 +10,7 @@ import pandas as pd
 
 TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
 TWELVEDATA_API_KEY = "5e5e950fa71c416e9ffdb86fce72dc4f"
-ASSETS = ["BTCUSD", "XAUUSD", "USTECH100"]
+ASSETS = ["BTC/USD", "XAU/USD", "NAS100"]
 
 dp = Dispatcher()
 bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
