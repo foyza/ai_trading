@@ -1,173 +1,178 @@
+import os
 import logging
-import sqlite3
-import requests
+import httpx
+import asyncio
+from datetime import datetime
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils import executor
 import pandas as pd
 import numpy as np
-import pandas_ta as ta
-import datetime
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
+import talib
+from collections import defaultdict
 
-TOKEN = "8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA"
-TWELVE_API_KEY = "5e5e950fa71c416e9ffdb86fce72dc4f"
+API_TOKEN = os.getenv("BOT_TOKEN")
+TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY")
 
-# Настройка логирования
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
 
-ASSETS = ['BTC/USD', 'XAU/USD', 'EUR/USD']
-STRATEGIES = ['MA+RSI+MACD', 'Bollinger+Stochastic']
+logging.basicConfig(level=logging.INFO)
 
-# Подключение к БД
-conn = sqlite3.connect('users.db', check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        asset TEXT DEFAULT 'BTC/USD',
-        mute INTEGER DEFAULT 0,
-        strategy TEXT DEFAULT 'MA+RSI+MACD'
+# Пользовательские настройки
+user_settings = defaultdict(lambda: {
+    "asset": "BTC/USD",
+    "strategy": "auto",
+    "mute": False,
+    "schedule": {},
+})
+
+ASSETS = ["BTC/USD", "XAU/USD", "EUR/USD"]
+STRATEGIES = ["MA+RSI+MACD", "Bollinger+Stochastic"]
+
+def get_keyboard(user_id):
+    mute_btn = "🔕 Mute" if not user_settings[user_id]["mute"] else "🔔 Unmute"
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🔄 Получить сигнал", callback_data="get_signal"),
+        InlineKeyboardButton("BTC/USD", callback_data="asset_BTC/USD"),
+        InlineKeyboardButton("XAU/USD", callback_data="asset_XAU/USD"),
+        InlineKeyboardButton("EUR/USD", callback_data="asset_EUR/USD"),
+        InlineKeyboardButton(mute_btn, callback_data="toggle_mute"),
+        InlineKeyboardButton("🎯 Стратегия", callback_data="choose_strategy"),
+        InlineKeyboardButton("🕒 Расписание", callback_data="schedule"),
+        InlineKeyboardButton("📊 Статус", callback_data="status"),
     )
-''')
-conn.commit()
+    return kb
 
+async def fetch_data(symbol):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol.replace('/', '')}&interval=15min&outputsize=100&apikey={TWELVEDATA_API_KEY}"
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url)
+        data = r.json()
+        if "values" not in data:
+            return None
+        df = pd.DataFrame(data["values"])
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.sort_values("datetime")
+        df.set_index("datetime", inplace=True)
+        df = df.astype(float)
+        return df
 
-# Получить данные с TwelveData
-def get_data(symbol):
-    try:
-        url = f'https://api.twelvedata.com/time_series?symbol={symbol.replace("/", "")}&interval=15min&outputsize=100&apikey={TWELVE_API_KEY}'
-        r = requests.get(url)
-        data = pd.DataFrame(r.json()['values'])
-        data = data.rename(columns={'datetime': 'date', 'close': 'close'})
-        data['close'] = data['close'].astype(float)
-        data = data[::-1].reset_index(drop=True)
-        return data
-    except Exception:
-        return None
+def strategy_ma_rsi_macd(df):
+    df["MA10"] = talib.SMA(df["close"], timeperiod=10)
+    df["MA50"] = talib.SMA(df["close"], timeperiod=50)
+    df["RSI"] = talib.RSI(df["close"], timeperiod=14)
+    macd, macdsignal, _ = talib.MACD(df["close"])
+    df["MACD"] = macd
+    df["MACD_SIGNAL"] = macdsignal
 
+    last = df.iloc[-1]
+    direction = None
+    if last["MA10"] > last["MA50"] and last["RSI"] > 50 and last["MACD"] > last["MACD_SIGNAL"]:
+        direction = "Buy"
+    elif last["MA10"] < last["MA50"] and last["RSI"] < 50 and last["MACD"] < last["MACD_SIGNAL"]:
+        direction = "Sell"
 
-# Индикаторы и стратегия
-def analyze(data, strategy):
-    if data is None or len(data) < 60:
-        return None
+    accuracy = 0.75 if direction else 0.55
+    return direction, accuracy
 
-    close = data['close'].values
-    if strategy == 'MA+RSI+MACD':
-        ma10 = data['close'].ta.sma(10)
-        rsi = data['close'].ta.rsi(14)
-        macd = data['close'].ta.macd()
-        macd, macdsignal, _ = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
+def strategy_boll_stoch(df):
+    upper, middle, lower = talib.BBANDS(df["close"], timeperiod=20)
+    slowk, slowd = talib.STOCH(df["high"], df["low"], df["close"])
+    df["upper"] = upper
+    df["lower"] = lower
+    df["slowk"] = slowk
+    df["slowd"] = slowd
 
-        signal = (
-            (ma10[-1] > ma50[-1]) and
-            (rsi[-1] < 30 or rsi[-1] > 70) and
-            (macd[-1] > macdsignal[-1])
-        )
-        direction = "Buy" if signal else "Sell"
-        accuracy = np.random.randint(60, 100) if signal else np.random.randint(40, 59)
+    last = df.iloc[-1]
+    direction = None
+    if last["close"] < last["lower"] and last["slowk"] < 20 and last["slowd"] < 20:
+        direction = "Buy"
+    elif last["close"] > last["upper"] and last["slowk"] > 80 and last["slowd"] > 80:
+        direction = "Sell"
+
+    accuracy = 0.72 if direction else 0.58
+    return direction, accuracy
+
+def calculate_tp_sl(price, direction):
+    tp_pct = 0.02
+    sl_pct = 0.01
+    if direction == "Buy":
+        tp = price * (1 + tp_pct)
+        sl = price * (1 - sl_pct)
     else:
-        upper, middle, lower = talib.BBANDS(close, timeperiod=20)
-        slowk, slowd = talib.STOCH(close, close, close)
-        signal = (close[-1] < lower[-1] and slowk[-1] < 20 and slowd[-1] < 20)
-        direction = "Buy" if signal else "Sell"
-        accuracy = np.random.randint(70, 95) if signal else np.random.randint(40, 59)
+        tp = price * (1 - tp_pct)
+        sl = price * (1 + sl_pct)
+    return round(tp, 2), round(sl, 2), tp_pct * 100, sl_pct * 100
 
-    price = close[-1]
-    tp = price * (1.02 if direction == "Buy" else 0.98)
-    sl = price * (0.98 if direction == "Buy" else 1.02)
+@dp.message_handler(commands=["start"])
+async def start(msg: types.Message):
+    await msg.answer("Пора выбраться из матрицы", reply_markup=get_keyboard(msg.from_user.id))
 
-    return {
-        'direction': direction,
-        'entry': round(price, 2),
-        'tp': round(tp, 2),
-        'sl': round(sl, 2),
-        'accuracy': accuracy
-    }
+@dp.callback_query_handler()
+async def handle_callback(query: types.CallbackQuery):
+    user_id = query.from_user.id
+    data = query.data
 
+    if data.startswith("asset_"):
+        asset = data.split("_")[1]
+        user_settings[user_id]["asset"] = asset
+        await query.answer(f"Выбран: {asset}")
+    elif data == "toggle_mute":
+        user_settings[user_id]["mute"] = not user_settings[user_id]["mute"]
+        state = "🔕" if user_settings[user_id]["mute"] else "🔔"
+        await query.answer(f"Звук: {state}")
+    elif data == "choose_strategy":
+        user_settings[user_id]["strategy"] = "auto" if user_settings[user_id]["strategy"] != "auto" else "Bollinger+Stochastic"
+        await query.answer(f"Стратегия: {user_settings[user_id]['strategy']}")
+    elif data == "status":
+        s = user_settings[user_id]
+        await query.message.answer(
+            f"📊 Ваши настройки:\nАктив: {s['asset']}\nСтратегия: {s['strategy']}\nMute: {'Да' if s['mute'] else 'Нет'}"
+        )
+    elif data == "get_signal":
+        await send_signal(user_id, query.message)
+    else:
+        await query.answer("В разработке...")
 
-# Обработка команд
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-    conn.commit()
-    await update.message.reply_text(
-        "Пора выбраться из матрицы",
-        reply_markup=main_keyboard(user_id)
+    await query.message.edit_reply_markup(reply_markup=get_keyboard(user_id))
+
+async def send_signal(user_id, message):
+    asset = user_settings[user_id]["asset"]
+    symbol = asset.replace("/", "")
+    df = await fetch_data(symbol)
+    if df is None:
+        await message.answer("❌ Не удалось получить данные.")
+        return
+
+    strategy = user_settings[user_id]["strategy"]
+    if strategy == "auto":
+        d1, a1 = strategy_ma_rsi_macd(df)
+        d2, a2 = strategy_boll_stoch(df)
+        if a1 > a2:
+            direction, accuracy = d1, a1
+        else:
+            direction, accuracy = d2, a2
+    elif strategy == "MA+RSI+MACD":
+        direction, accuracy = strategy_ma_rsi_macd(df)
+    else:
+        direction, accuracy = strategy_boll_stoch(df)
+
+    if not direction:
+        await message.answer(f"⚠️ Риск велик, не время торговли (точность: {round(accuracy * 100)}%)")
+        return
+
+    entry = round(df["close"].iloc[-1], 2)
+    tp, sl, tp_pct, sl_pct = calculate_tp_sl(entry, direction)
+    await message.answer(
+        f"📈 Сигнал по {asset}:\n"
+        f"Направление: {direction}\n"
+        f"Цена входа: {entry}\n"
+        f"🎯 Take-Profit: {tp} (+{tp_pct}%)\n"
+        f"🛑 Stop-Loss: {sl} (-{sl_pct}%)\n"
+        f"📊 Точность прогноза: {round(accuracy * 100)}%"
     )
 
-
-def main_keyboard(user_id):
-    cursor.execute("SELECT mute FROM users WHERE user_id=?", (user_id,))
-    mute = cursor.fetchone()[0]
-    mute_button = "🔔 Unmute" if mute else "🔕 Mute"
-
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Получить сигнал", callback_data='signal')],
-        [InlineKeyboardButton("BTCUSD", callback_data='asset_BTC/USD'),
-         InlineKeyboardButton("XAUUSD", callback_data='asset_XAU/USD'),
-         InlineKeyboardButton("EURUSD", callback_data='asset_EUR/USD')],
-        [InlineKeyboardButton(mute_button, callback_data='toggle_mute')],
-        [InlineKeyboardButton("🎯 Стратегия", callback_data='strategy')],
-        [InlineKeyboardButton("🕒 Расписание", callback_data='schedule')],
-        [InlineKeyboardButton("📊 Статус", callback_data='status')]
-    ])
-
-
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
-    await query.answer()
-
-    if query.data == 'signal':
-        cursor.execute("SELECT asset, strategy FROM users WHERE user_id=?", (user_id,))
-        asset, strategy = cursor.fetchone()
-        data = get_data(asset)
-        signal = analyze(data, strategy)
-        if not signal or signal['accuracy'] < 60:
-            await query.edit_message_text(f"⚠️ Риск велик, не время торговли (точность: {signal['accuracy'] if signal else '0'}%)",
-                                          reply_markup=main_keyboard(user_id))
-        else:
-            msg = f"""
-📈 Актив: {asset}
-📍 Сигнал: {signal['direction']}
-🎯 Цена входа: {signal['entry']}
-✅ Take-Profit: {signal['tp']}
-🛑 Stop-Loss: {signal['sl']}
-📊 Точность прогноза: {signal['accuracy']}%
-"""
-            await query.edit_message_text(msg, reply_markup=main_keyboard(user_id))
-
-    elif query.data.startswith('asset_'):
-        asset = query.data.split('_')[1]
-        cursor.execute("UPDATE users SET asset=? WHERE user_id=?", (asset, user_id))
-        conn.commit()
-        await query.edit_message_text(f"✅ Актив выбран: {asset}", reply_markup=main_keyboard(user_id))
-
-    elif query.data == 'toggle_mute':
-        cursor.execute("SELECT mute FROM users WHERE user_id=?", (user_id,))
-        current = cursor.fetchone()[0]
-        cursor.execute("UPDATE users SET mute=? WHERE user_id=?", (0 if current else 1, user_id))
-        conn.commit()
-        await query.edit_message_text(f"{'🔔 Включены' if current else '🔕 Отключены'} уведомления", reply_markup=main_keyboard(user_id))
-
-    elif query.data == 'strategy':
-        current = cursor.execute("SELECT strategy FROM users WHERE user_id=?", (user_id,)).fetchone()[0]
-        new_strategy = 'Bollinger+Stochastic' if current == 'MA+RSI+MACD' else 'MA+RSI+MACD'
-        cursor.execute("UPDATE users SET strategy=? WHERE user_id=?", (new_strategy, user_id))
-        conn.commit()
-        await query.edit_message_text(f"🎯 Стратегия выбрана: {new_strategy}", reply_markup=main_keyboard(user_id))
-
-    elif query.data == 'status':
-        cursor.execute("SELECT asset, strategy, mute FROM users WHERE user_id=?", (user_id,))
-        asset, strategy, mute = cursor.fetchone()
-        msg = f"📊 Ваши настройки:\nАктив: {asset}\nСтратегия: {strategy}\nMute: {'Да' if mute else 'Нет'}"
-        await query.edit_message_text(msg, reply_markup=main_keyboard(user_id))
-
-    elif query.data == 'schedule':
-        await query.edit_message_text("🕒 Настройка расписания пока не реализована", reply_markup=main_keyboard(user_id))
-
-
-if __name__ == '__main__':
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(handle_button))
-    app.run_polling()
+if __name__ == "__main__":
+    executor.start_polling(dp, skip_updates=True)
