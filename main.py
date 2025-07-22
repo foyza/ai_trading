@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import aiosqlite
@@ -88,7 +89,7 @@ def mock_signal(data, strategy):
         return None
 
 # ---------- HANDLERS ----------
-@dp.message(commands=["start"])
+@dp.message(Command("start"))
 async def start_handler(message: types.Message):
     await get_user(message.from_user.id)
     await message.answer("👋 Пора выбраться из матрицы", reply_markup=main_menu(await get_user(message.from_user.id)))
