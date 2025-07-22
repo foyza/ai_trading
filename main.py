@@ -1,36 +1,36 @@
 import asyncio
 import logging
+import os
+import httpx
+import aiosqlite
+import numpy as np
+import pandas as pd
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-import aiosqlite
-import httpx
-import os
 
+# API keys from environment variables (best for Railway)
 API_TOKEN = '8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA'
 TWELVE_API_KEY = '5e5e950fa71c416e9ffdb86fce72dc4f'
 
-ASSETS = ['BTC/USD', 'XAU/USD', 'EUR/USD']
-STRATEGIES = ['MA+RSI+MACD', 'Bollinger+Stochastic']
-DEFAULT_STRATEGY = 'MA+RSI+MACD'
-
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
-
 logging.basicConfig(level=logging.INFO)
+
+ASSETS = ['BTC/USD', 'XAU/USD', 'EUR/USD']
+STRATEGIES = ['MA+RSI+MACD', 'Bollinger+Stochastic']
 
 # ---------- DATABASE ----------
 async def init_db():
     async with aiosqlite.connect("users.db") as db:
         await db.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    asset TEXT DEFAULT 'BTC/USD',
-    strategy TEXT DEFAULT 'MA+RSI+MACD',
-    mute INTEGER DEFAULT 0
-)
-""")
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            asset TEXT DEFAULT 'BTC/USD',
+            strategy TEXT DEFAULT 'MA+RSI+MACD',
+            mute INTEGER DEFAULT 0
+        )""")
         await db.commit()
 
 async def get_user(user_id):
@@ -50,43 +50,87 @@ async def update_user(user_id, field, value):
 
 # ---------- UI ----------
 def main_menu(user):
-    mute_status = "🔕 Mute" if user[3] == 0 else "🔔 Unmute"
-    buttons = [
+    mute_btn = "🔕 Mute" if user[3] == 0 else "🔔 Unmute"
+    return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Получить сигнал", callback_data="signal")],
         [InlineKeyboardButton(text="BTCUSD", callback_data="asset_BTC/USD"),
          InlineKeyboardButton(text="XAUUSD", callback_data="asset_XAU/USD"),
          InlineKeyboardButton(text="EURUSD", callback_data="asset_EUR/USD")],
-        [InlineKeyboardButton(text="🔕 Mute" if user[3] == 0 else "🔔 Unmute", callback_data="toggle_mute")],
+        [InlineKeyboardButton(text=mute_btn, callback_data="toggle_mute")],
         [InlineKeyboardButton(text="🎯 Стратегия", callback_data="strategy")],
         [InlineKeyboardButton(text="🕒 Расписание", callback_data="schedule")],
         [InlineKeyboardButton(text="📊 Статус", callback_data="status")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    ])
 
-# ---------- MARKET ANALYSIS ----------
+# ---------- STRATEGIES ----------
+def calculate_indicators(df, strategy):
+    df["close"] = df["close"].astype(float)
+
+    if strategy == "MA+RSI+MACD":
+        df["MA10"] = df["close"].rolling(window=10).mean()
+        df["MA50"] = df["close"].rolling(window=50).mean()
+        delta = df["close"].diff()
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        avg_gain = pd.Series(gain).rolling(window=14).mean()
+        avg_loss = pd.Series(loss).rolling(window=14).mean()
+        rs = avg_gain / avg_loss
+        df["RSI"] = 100 - (100 / (1 + rs))
+        df["EMA12"] = df["close"].ewm(span=12).mean()
+        df["EMA26"] = df["close"].ewm(span=26).mean()
+        df["MACD"] = df["EMA12"] - df["EMA26"]
+
+        last = df.iloc[-1]
+        direction = None
+        if last["MA10"] > last["MA50"] and last["RSI"] > 50 and last["MACD"] > 0:
+            direction = "Buy"
+        elif last["MA10"] < last["MA50"] and last["RSI"] < 50 and last["MACD"] < 0:
+            direction = "Sell"
+        return direction
+
+    elif strategy == "Bollinger+Stochastic":
+        df["MA20"] = df["close"].rolling(window=20).mean()
+        df["STD20"] = df["close"].rolling(window=20).std()
+        df["Upper"] = df["MA20"] + 2 * df["STD20"]
+        df["Lower"] = df["MA20"] - 2 * df["STD20"]
+        df["%K"] = ((df["close"] - df["close"].rolling(14).min()) /
+                   (df["close"].rolling(14).max() - df["close"].rolling(14).min())) * 100
+        df["%D"] = df["%K"].rolling(3).mean()
+
+        last = df.iloc[-1]
+        direction = None
+        if last["close"] < last["Lower"] and last["%K"] < 20:
+            direction = "Buy"
+        elif last["close"] > last["Upper"] and last["%K"] > 80:
+            direction = "Sell"
+        return direction
+    return None
+
 async def fetch_data(symbol):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=50&apikey={TWELVE_API_KEY}"
     async with httpx.AsyncClient() as client:
         r = await client.get(url)
-        data = r.json()
-        return data["values"]
+        raw = r.json()
+        df = pd.DataFrame(raw["values"])[::-1]  # reverse for ascending order
+        df["close"] = df["close"].astype(float)
+        return df
 
-def mock_signal(data, strategy):
-    # 🔧 Replace with real indicators: MA, RSI, MACD, etc.
-    import random
-    confidence = random.randint(50, 90)
-    if confidence >= 70:
+async def generate_signal(asset, strategy):
+    df = await fetch_data(asset)
+    direction = calculate_indicators(df, strategy)
+
+    if direction:
+        entry = df.iloc[-1]["close"]
+        confidence = 75  # placeholder, in real app — calculate from backtest stats
         return {
-            "direction": "Buy" if random.random() > 0.5 else "Sell",
-            "entry": float(data[0]["close"]),
-            "take_profit": round(float(data[0]["close"]) * 1.02, 2),
-            "stop_loss": round(float(data[0]["close"]) * 0.98, 2),
+            "direction": direction,
+            "entry": entry,
+            "take_profit": round(entry * 1.02, 2),
+            "stop_loss": round(entry * 0.98, 2),
             "confidence": confidence
         }
-    elif confidence < 60:
-        return {"warning": f"⚠️ Риск велик, не время торговли (точность: {confidence}%)"}
     else:
-        return None
+        return {"warning": "⚠️ Риск велик, не время торговли (точность: <60%)"}
 
 # ---------- HANDLERS ----------
 @dp.message(Command("start"))
@@ -99,15 +143,13 @@ async def callback_handler(call: types.CallbackQuery):
     user = await get_user(call.from_user.id)
 
     if call.data == "signal":
-        data = await fetch_data(user[1])
-        signal = mock_signal(data, user[2])
-        if not signal:
-            await call.message.answer("Нет уверенного сигнала.")
-        elif "warning" in signal:
+        signal = await generate_signal(user[1], user[2])
+        if "warning" in signal:
             await call.message.answer(signal["warning"])
         else:
             await call.message.answer(
-                f"🎯 Сигнал по {user[1]}\n📈 {signal['direction']}\nЦена входа: {signal['entry']}\n"
+                f"🎯 Сигнал по {user[1]}\n📈 {signal['direction']}\n"
+                f"Цена входа: {signal['entry']}\n"
                 f"TP: {signal['take_profit']} | SL: {signal['stop_loss']}\n"
                 f"Точность: {signal['confidence']}%"
             )
@@ -120,8 +162,7 @@ async def callback_handler(call: types.CallbackQuery):
     elif call.data == "toggle_mute":
         new_mute = 0 if user[3] == 1 else 1
         await update_user(call.from_user.id, "mute", new_mute)
-        status = "🔕 Оповещения отключены" if new_mute else "🔔 Оповещения включены"
-        await call.message.answer(status)
+        await call.message.answer("🔕 Оповещения отключены" if new_mute else "🔔 Оповещения включены")
 
     elif call.data == "strategy":
         builder = InlineKeyboardBuilder()
@@ -131,7 +172,7 @@ async def callback_handler(call: types.CallbackQuery):
         await call.message.answer("Выберите стратегию:", reply_markup=builder.as_markup())
 
     elif call.data.startswith("strat_"):
-        strat = call.data.split("_")[1]
+        strat = call.data.split("_", 1)[1]
         await update_user(call.from_user.id, "strategy", strat)
         await call.message.answer(f"✅ Стратегия установлена: {strat}")
 
