@@ -7,8 +7,8 @@ import aiosqlite
 import httpx
 import os
 
-API_TOKEN = os.getenv("BOT_TOKEN")
-TWELVE_API_KEY = os.getenv("TWELVE_API_KEY")
+API_TOKEN = '8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA'
+TWELVE_API_KEY = '5e5e950fa71c416e9ffdb86fce72dc4f'
 
 ASSETS = ['BTC/USD', 'XAU/USD', 'EUR/USD']
 STRATEGIES = ['MA+RSI+MACD', 'Bollinger+Stochastic']
