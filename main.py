@@ -3,154 +3,155 @@ import httpx
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from aiogram.filters import CommandStart
+from datetime import datetime, timedelta
 
+# Загрузка переменных
 
-TELEGRAM_TOKEN = '8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA'
-TWELVE_DATA_API_KEY = '5e5e950fa71c416e9ffdb86fce72dc4f'
+BOT_TOKEN = '8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA'
+API_KEY = '5e5e950fa71c416e9ffdb86fce72dc4f'
 
-bot = Bot(token=TELEGRAM_TOKEN)
+bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
+# Хранение настроек пользователя
 user_settings = {}
 
-symbols = {
-    "BTC/USD": "BTC/USD",
-    "XAU/USD": "XAU/USD",
-    "EUR/USD": "EUR/USD"
-}
-
+symbols = ["BTC/USD", "XAU/USD", "EUR/USD"]
 strategies = ["MA+RSI+MACD", "Bollinger+Stochastic"]
 
-keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="🔄 Получить сигнал")],
-        [KeyboardButton(text="BTC/USD"), KeyboardButton(text="XAU/USD"), KeyboardButton(text="EUR/USD")],
-        [KeyboardButton(text="🔕 Mute"), KeyboardButton(text="🔔 Unmute")],
-        [KeyboardButton(text="🎯 Стратегия")],
-        [KeyboardButton(text="🕒 Расписание")],
-        [KeyboardButton(text="📊 Статус")]
-    ],
-    resize_keyboard=True
-)
+def get_main_keyboard():
+    buttons = [
+        [KeyboardButton("🔄 Получить сигнал")],
+        [KeyboardButton(s.split("/")[0] + "USD") for s in symbols],
+        [KeyboardButton("🔕 Mute"), KeyboardButton("🔔 Unmute")],
+        [KeyboardButton("🎯 Стратегия")],
+        [KeyboardButton("🕒 Расписание")],
+        [KeyboardButton("📊 Статус")]
+    ]
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 async def fetch_data(symbol):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=50&apikey={TWELVE_DATA_API_KEY}"
-    async with httpx.AsyncClient() as client:
-        r = await client.get(url)
-        return r.json()
+    params = {
+        "symbol": symbol,
+        "interval": "15min",
+        "outputsize": 100,
+        "apikey": API_KEY
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get("https://api.twelvedata.com/time_series", params=params)
+    return resp.json()
 
 def analyze(data, strategy):
     if "values" not in data:
-        return {"error": data.get("message", "Ошибка данных с биржи")}
-
+        return {"error": data.get("message", "Нет данных")}
     price = float(data["values"][0]["close"])
-
+    # Тестовые сигналы — заменить на реальную логику
     if strategy == "MA+RSI+MACD":
-        return {"signal": "Buy", "confidence": 75, "tp": 1.5, "sl": 1.0, "price": price}
-    if strategy == "Bollinger+Stochastic":
-        return {"signal": "Sell", "confidence": 78, "tp": 2.0, "sl": 1.2, "price": price}
-    return None
+        return {"signal": "Buy", "confidence": 80, "tp_pct": 1.5, "sl_pct": 1.0, "price": price}
+    else:
+        return {"signal": "Sell", "confidence": 82, "tp_pct": 2.0, "sl_pct": 1.2, "price": price}
+
+def calc_levels(price, tp_pct, sl_pct, direction):
+    if direction == "Buy":
+        tp_price = round(price * (1 + tp_pct / 100), 4)
+        sl_price = round(price * (1 - sl_pct / 100), 4)
+    else:
+        tp_price = round(price * (1 - tp_pct / 100), 4)
+        sl_price = round(price * (1 + sl_pct / 100), 4)
+    return tp_price, sl_price
 
 @dp.message(CommandStart())
 async def start(msg: types.Message):
-    user_settings[msg.from_user.id] = {
-        "asset": "BTCUSD",
+    user_id = msg.from_user.id
+    user_settings[user_id] = {
+        "asset": symbols[0],
         "mute": False,
-        "strategy": strategies[0]
+        "strategy": strategies[0],
+        "schedule": {}  # future: хранение расписания
     }
-    await msg.answer("Пора выбраться из матрицы", reply_markup=keyboard)
+    await msg.answer("Пора выбраться из матрицы", reply_markup=get_main_keyboard())
 
 @dp.message()
 async def handle(msg: types.Message):
-    user_id = msg.from_user.id
+    uid = msg.from_user.id
     text = msg.text
-
-    if user_id not in user_settings:
+    if uid not in user_settings:
         await start(msg)
         return
 
-    u = user_settings[user_id]
+    st = user_settings[uid]
 
     if text == "🔄 Получить сигнал":
-        data = await fetch_data(u["asset"])
-        result = analyze(data, u["strategy"])
+        data = await fetch_data(st["asset"])
+        res = analyze(data, st["strategy"])
+        if "error" in res:
+            return await msg.answer(f"❌ {res['error']}")
+        if res["confidence"] < 60:
+            return await msg.answer(f"⚠️ Риск велик, не время торговли (точность: {res['confidence']}%)")
+        tp, sl = calc_levels(res["price"], res["tp_pct"], res["sl_pct"], res["signal"])
+        return await msg.answer(
+            f"📈 Сигнал по {st['asset']}:\n"
+            f"📍 Направление: {res['signal']}\n"
+            f"💰 Входная цена: {res['price']}\n"
+            f"🎯 TP: +{res['tp_pct']}% → {tp}\n"
+            f"🛑 SL: -{res['sl_pct']}% → {sl}\n"
+            f"📊 Точность: {res['confidence']}%"
+        )
 
-        if result is None:
-            await msg.answer("❌ Нет сигнала по текущей стратегии.")
-            return
+    if text in ["BTCUSD", "XAUUSD", "EURUSD"]:
+        choice = text.replace("USD","") + "/USD"
+        if choice in symbols:
+            st["asset"] = choice
+            return await msg.answer(f"✅ Актив: {choice}")
 
-        if "error" in result:
-            await msg.answer(f"❌ Ошибка: {result['error']}")
-            return
+    if text == "🔕 Mute":
+        st["mute"] = True
+        return await msg.answer("🔕 Уведомления отключены")
+    if text == "🔔 Unmute":
+        st["mute"] = False
+        return await msg.answer("🔔 Уведомления включены")
 
-        if result["confidence"] < 60:
-            await msg.answer(f"⚠️ Риск велик, не время торговли (точность: {result['confidence']}%)")
-        else:
-            price = result["price"]
-            tp_price = round(price * (1 + result["tp"] / 100), 2)
-            sl_price = round(price * (1 - result["sl"] / 100), 2)
-            await msg.answer(
-                f"📈 Сигнал по {symbols[u['asset']]}:\n"
-                f"📍 Направление: {result['signal']}\n"
-                f"💰 Цена входа: {price}\n"
-                f"🎯 TP: +{result['tp']}% → {tp_price}\n"
-                f"🛑 SL: -{result['sl']}% → {sl_price}\n"
-                f"📊 Точность прогноза: {result['confidence']}%"
-            )
-
-    elif text in symbols:
-        u["asset"] = text
-        await msg.answer(f"✅ Актив установлен: {symbols[text]}")
-
-    elif text == "🔕 Mute":
-        u["mute"] = True
-        await msg.answer("🔕 Уведомления отключены")
-
-    elif text == "🔔 Unmute":
-        u["mute"] = False
-        await msg.answer("🔔 Уведомления включены")
-
-    elif text == "🎯 Стратегия":
-        u["strategy"] = strategies[1] if u["strategy"] == strategies[0] else strategies[0]
-        await msg.answer(f"🎯 Текущая стратегия: {u['strategy']}")
-
-    elif text == "📊 Статус":
-        mute_status = "🔕" if u["mute"] else "🔔"
-        await msg.answer(
-            f"📊 Ваши настройки:\n"
-            f"Актив: {symbols[u['asset']]}\n"
-            f"Стратегия: {u['strategy']}\n"
-            f"Mute: {mute_status}")
+    if text == "🎯 Стратегия":
+        st["strategy"] = strategies[1] if st["strategy"] == strategies[0] else strategies[0]
+        return await msg.answer(f"🎯 Стратегия: {st['strategy']}")
         
-    elif text == "🕒 Расписание":
-        await msg.answer("🕒 Настройка расписания будет добавлена в будущих версиях.")
+    if text == "📊 Статус":
+        mute = "🔕" if st["mute"] else "🔔"
+        return await msg.answer(
+            f"📊 Ваши настройки:\n"
+            f"Актив: {st['asset']}\n"
+            f"Стратегия: {st['strategy']}\n"
+            f"Mute: {mute}"
+        )
 
-async def auto_signals():
+    if text == "🕒 Расписание":
+        return await msg.answer("🕒 Расписание пока не реализовано")
+
+async def auto_send():
     while True:
-        for uid, u in user_settings.items():
-            if u["mute"]:
-                continue
-
-            data = await fetch_data(u["asset"])
-            result = analyze(data, u["strategy"])
-
-            if result and "error" not in result and result["confidence"] > 70:
-                price = result["price"]
-                tp_price = round(price * (1 + result["tp"] / 100), 2)
-                sl_price = round(price * (1 - result["sl"] / 100), 2)
+        for uid, st in list(user_settings.items()):
+            if st["mute"]: continue
+            data = await fetch_data(st["asset"])
+            res = analyze(data, st["strategy"])
+            if "error" in res or res["confidence"] <= 70: continue
+            tp, sl = calc_levels(res["price"], res["tp_pct"], res["sl_pct"], res["signal"])
+            try:
                 await bot.send_message(
                     uid,
-                    f"📢 Автосигнал по {symbols[u['asset']]}:\n"
-                    f"📍 {result['signal']} по {price}\n"
-                    f"🎯 TP: {tp_price} (+{result['tp']}%)\n"
-                    f"🛑 SL: {sl_price} (-{result['sl']}%)\n"
-                    f"📊 Точность: {result['confidence']}%"
+                    f"📢 Авто-сигнал по {st['asset']}:\n"
+                    f"📍 {res['signal']} @ {res['price']}\n"
+                    f"🎯 TP: {tp} (+{res['tp_pct']}%)\n"
+                    f"🛑 SL: {sl} (-{res['sl_pct']}%)\n"
+                    f"📊 Точность: {res['confidence']}%"
                 )
-        await asyncio.sleep(900)  # каждые 15 минут
+            except:
+                pass
+        await asyncio.sleep(900)
 
 async def main():
-    asyncio.create_task(auto_signals())
+    asyncio.create_task(auto_send())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+        
