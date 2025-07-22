@@ -24,13 +24,13 @@ logging.basicConfig(level=logging.INFO)
 async def init_db():
     async with aiosqlite.connect("users.db") as db:
         await db.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            asset TEXT DEFAULT 'BTC/USD',
-            strategy TEXT DEFAULT ?,
-            mute INTEGER DEFAULT 0
-        )
-        """, (DEFAULT_STRATEGY,))
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    asset TEXT DEFAULT 'BTC/USD',
+    strategy TEXT DEFAULT 'MA+RSI+MACD',
+    mute INTEGER DEFAULT 0
+)
+""")
         await db.commit()
 
 async def get_user(user_id):
