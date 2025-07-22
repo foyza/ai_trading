@@ -122,7 +122,7 @@ async def handle(msg: types.Message):
             f"Стратегия: {u['strategy']}\n"
             f"Mute: {mute_status}")
         
-     elif text == "🕒 Расписание":
+    elif text == "🕒 Расписание":
         await msg.answer("🕒 Настройка расписания будет добавлена в будущих версиях.")
 
 async def auto_signals():
