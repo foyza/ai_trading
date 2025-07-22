@@ -136,7 +136,8 @@ def calc_levels(price, tp_pct, sl_pct, direction):
 
 @dp.message(CommandStart())
 async def cmd_start(msg: types.Message):
-    uid = msg.from_user.iduser_settings[uid] = {"asset": symbols[0], "mute": False, "strategy": strategies[0], "schedule": []}
+    uid = msg.from_user.id
+    user_settings[uid] = {"asset": symbols[0], "mute": False, "strategy": strategies[0], "schedule": []}
     await msg.answer("Пора выбраться из матрицы", reply_markup=get_main_keyboard())
 
 @dp.message()
