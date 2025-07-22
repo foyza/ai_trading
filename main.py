@@ -3,12 +3,10 @@ import httpx
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from aiogram.filters import CommandStart
-from dotenv import dotenv_values
 
-# Загружаем переменные из .env
-config = dotenv_values(".env")
-TELEGRAM_TOKEN = config["TELEGRAM_TOKEN"]
-TWELVE_DATA_API_KEY = config["TWELVE_DATA_API_KEY"]
+
+TELEGRAM_TOKEN = '8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA'
+TWELVE_DATA_API_KEY = '5e5e950fa71c416e9ffdb86fce72dc4f'
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
