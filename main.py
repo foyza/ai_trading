@@ -59,18 +59,35 @@ def analyze_combined(m15, h1):
 
     latest = df.iloc[-1]
 
-    if latest["adx"] < 20: return {"error": "Рынок слабый (ADX < 20)"}
-    if latest["rsi"] > 70 or latest["rsi"] < 30: return {"error": "Рынок перегрет (RSI)"}
-    if is_doji(m15["values"][0]): return {"error": "Формация Doji — сигнал пропущен"}
+    if latest["adx"] < 20:
+        return {"error": "Рынок слабый (ADX < 20)"}
+
+    if is_doji(m15["values"][0]):
+        return {"error": "Формация Doji — сигнал пропущен"}
+
+    note = ""
+    if latest["rsi"] > 70:
+        note = "⚠️ RSI > 70 (перекуплен)"
+    elif latest["rsi"] < 30:
+        note = "⚠️ RSI < 30 (перепродан)"
 
     trend = "up" if latest["close"] > latest["ema"] else "down"
     signal = "Buy" if trend == "up" else "Sell"
     price = latest["close"]
     atr = latest["atr"]
+
     tp_pct = round(atr / price * 100 * 2, 2)
     sl_pct = round(atr / price * 100, 2)
     confidence = 80 + (5 if trend == "up" else 0)
-    return {"signal": signal, "price": price, "tp_pct": tp_pct, "sl_pct": sl_pct, "confidence": confidence}
+
+    return {
+        "signal": signal,
+        "price": price,
+        "tp_pct": tp_pct,
+        "sl_pct": sl_pct,
+        "confidence": confidence,
+        "note": note
+    }
 
 def calc_levels(price, tp_pct, sl_pct, direction, spread=0.01, commission=0.02):
     adjust = (spread + commission) / 100
@@ -92,17 +109,21 @@ async def cmd_start(msg: types.Message):
 async def handle(msg: types.Message):
     uid = msg.from_user.id
     text = msg.text
+
     if uid not in user_settings:
         await cmd_start(msg)
         return
+
     st = user_settings[uid]
 
     if text == "🔄 Получить сигнал":
         m15 = await fetch_data(st["asset"], "15min")
         h1 = await fetch_data(st["asset"], "1h")
         res = analyze_combined(m15, h1)
+
         if "error" in res:
             return await msg.answer(f"⚠️ {res['error']}")
+
         tp, sl = calc_levels(res["price"], res["tp_pct"], res["sl_pct"], res["signal"])
         return await msg.answer(
             f"📈 Сигнал по {st['asset']}:\n"
@@ -110,7 +131,8 @@ async def handle(msg: types.Message):
             f"💰 Вход: {res['price']}\n"
             f"🎯 TP +{res['tp_pct']}% → {tp}\n"
             f"🛑 SL -{res['sl_pct']}% → {sl}\n"
-            f"📊 Точность: {res['confidence']}%"
+            f"📊 Точность: {res['confidence']}%\n"
+            f"{res.get('note', '')}"
         )
 
     if text in [s.replace("/", "") for s in symbols]:
@@ -130,7 +152,12 @@ async def handle(msg: types.Message):
 
     if text == "📊 Статус":
         mute = "🔕" if st["mute"] else "🔔"
-        return await msg.answer(f"📊 Настройки:\nАктив: {st['asset']}\nСтратегия: {st['strategy']}\nУведомления: {mute}")
+        return await msg.answer(
+            f"📊 Настройки:\n"
+            f"Актив: {st['asset']}\n"
+            f"Стратегия: {st['strategy']}\n"
+            f"Mute: {mute}"
+        )
 
     if text == "🕒 Расписание":
         return await msg.answer("🕒 Расписание — скоро будет")
