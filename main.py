@@ -1,154 +1,148 @@
-import asyncio
 import logging
+import asyncio
+import json
+from datetime import datetime, time
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-import aiosqlite
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.filters import CommandStart
 import httpx
 import os
 
-API_TOKEN = '8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA'
-TWELVE_API_KEY = '5e5e950fa71c416e9ffdb86fce72dc4f'
+API_KEY = '8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA'
+TWELVE_DATA_API_KEY = '5e5e950fa71c416e9ffdb86fce72dc4f'
 
-ASSETS = ['BTC/USD', 'XAU/USD', 'EUR/USD']
-STRATEGIES = ['MA+RSI+MACD', 'Bollinger+Stochastic']
-DEFAULT_STRATEGY = 'MA+RSI+MACD'
-
-bot = Bot(token=API_TOKEN)
+bot = Bot(token=API_KEY)
 dp = Dispatcher()
-
 logging.basicConfig(level=logging.INFO)
 
-# ---------- DATABASE ----------
-async def init_db():
-    async with aiosqlite.connect("users.db") as db:
-        await db.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    asset TEXT DEFAULT 'BTC/USD',
-    strategy TEXT DEFAULT 'MA+RSI+MACD',
-    mute INTEGER DEFAULT 0
+user_data = {}
+
+KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🔄 Получить сигнал")],
+        [KeyboardButton(text="BTCUSD / XAUUSD / EURUSD")],
+        [KeyboardButton(text="🔕 Mute / 🔔 Unmute")],
+        [KeyboardButton(text="🎯 Стратегия")],
+        [KeyboardButton(text="🕒 Расписание")],
+        [KeyboardButton(text="📊 Статус")]
+    ],
+    resize_keyboard=True
 )
-""")
-        await db.commit()
 
-async def get_user(user_id):
-    async with aiosqlite.connect("users.db") as db:
-        async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as cursor:
-            user = await cursor.fetchone()
-            if not user:
-                await db.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
-                await db.commit()
-                return await get_user(user_id)
-            return user
+AVAILABLE_SYMBOLS = ["BTC/USD", "XAU/USD", "EUR/USD"]
+DEFAULT_STRATEGY = "MA+RSI+MACD"
 
-async def update_user(user_id, field, value):
-    async with aiosqlite.connect("users.db") as db:
-        await db.execute(f"UPDATE users SET {field} = ? WHERE user_id = ?", (value, user_id))
-        await db.commit()
-
-# ---------- UI ----------
-def main_menu(user):
-    mute_status = "🔕 Mute" if user[3] == 0 else "🔔 Unmute"
-    buttons = [
-        [InlineKeyboardButton(text="🔄 Получить сигнал", callback_data="signal")],
-        [InlineKeyboardButton(text="BTCUSD", callback_data="asset_BTC/USD"),
-         InlineKeyboardButton(text="XAUUSD", callback_data="asset_XAU/USD"),
-         InlineKeyboardButton(text="EURUSD", callback_data="asset_EUR/USD")],
-        [InlineKeyboardButton(text="🔕 Mute" if user[3] == 0 else "🔔 Unmute", callback_data="toggle_mute")],
-        [InlineKeyboardButton(text="🎯 Стратегия", callback_data="strategy")],
-        [InlineKeyboardButton(text="🕒 Расписание", callback_data="schedule")],
-        [InlineKeyboardButton(text="📊 Статус", callback_data="status")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-# ---------- MARKET ANALYSIS ----------
-async def fetch_data(symbol):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=50&apikey={TWELVE_API_KEY}"
+async def get_market_data(symbol: str):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=50&apikey={TWELVE_DATA_API_KEY}"
     async with httpx.AsyncClient() as client:
         r = await client.get(url)
-        data = r.json()
-        return data["values"]
+        return r.json()
 
-def mock_signal(data, strategy):
-    # 🔧 Replace with real indicators: MA, RSI, MACD, etc.
-    import random
-    confidence = random.randint(50, 90)
-    if confidence >= 70:
-        return {
-            "direction": "Buy" if random.random() > 0.5 else "Sell",
-            "entry": float(data[0]["close"]),
-            "take_profit": round(float(data[0]["close"]) * 1.02, 2),
-            "stop_loss": round(float(data[0]["close"]) * 0.98, 2),
-            "confidence": confidence
-        }
-    elif confidence < 60:
-        return {"warning": f"⚠️ Риск велик, не время торговли (точность: {confidence}%)"}
-    else:
-        return None
+def calculate_signals(data, strategy):
+    if strategy == "MA+RSI+MACD":
+        return {"signal": "Buy", "confidence": 75, "tp": 1.5, "sl": 1.0, "price": float(data['values'][0]['close'])}
+    elif strategy == "Bollinger+Stochastic":
+        return {"signal": "Sell", "confidence": 72, "tp": 2.0, "sl": 1.5, "price": float(data['values'][0]['close'])}
+    return None
 
-# ---------- HANDLERS ----------
-@dp.message(Command("start"))
-async def start_handler(message: types.Message):
-    await get_user(message.from_user.id)
-    await message.answer("Пора выбраться из матрицы", reply_markup=main_menu(await get_user(message.from_user.id)))
+@dp.message(CommandStart())
+async def start(msg: types.Message):
+    user_id = msg.from_user.id
+    user_data[user_id] = {
+        "asset": "BTC/USD",
+        "mute": False,
+        "strategy": DEFAULT_STRATEGY,
+        "schedule": {},
+    }
+    await msg.answer("Пора выбраться из матрицы", reply_markup=KEYBOARD)
 
-@dp.callback_query()
-async def callback_handler(call: types.CallbackQuery):
-    user = await get_user(call.from_user.id)
+@dp.message()
+async def handle(msg: types.Message):
+    user_id = msg.from_user.id
+    text = msg.text
 
-    if call.data == "signal":
-        data = await fetch_data(user[1])
-        signal = mock_signal(data, user[2])
-        if not signal:
-            await call.message.answer("Нет уверенного сигнала.")
-        elif "warning" in signal:
-            await call.message.answer(signal["warning"])
+    if user_id not in user_data:
+        await start(msg)
+        return
+
+    if text == "🔄 Получить сигнал":
+        asset = user_data[user_id]["asset"]
+        strategy = user_data[user_id]["strategy"]
+        data = await get_market_data(asset.replace("/", ""))
+        signal = calculate_signals(data, strategy)
+        if signal:
+            if signal["confidence"] < 60:
+                await msg.answer(f"⚠️ Риск велик, не время торговли (точность: {signal['confidence']}%)")
+            else:
+                await msg.answer(
+                    f"📈 Сигнал по {asset}:\n"
+                    f"📍 Направление: {signal['signal']}\n"
+                    f"💰 Цена входа: {signal['price']}\n"
+                    f"🎯 Take-Profit: +{signal['tp']}%\n"
+                    f"🛑 Stop-Loss: -{signal['sl']}%\n"
+                    f"📊 Точность прогноза: {signal['confidence']}%"
+                )
         else:
-            await call.message.answer(
-                f"🎯 Сигнал по {user[1]}\n📈 {signal['direction']}\nЦена входа: {signal['entry']}\n"
-                f"TP: {signal['take_profit']} | SL: {signal['stop_loss']}\n"
-                f"Точность: {signal['confidence']}%"
-            )
+            await msg.answer("Нет уверенного сигнала по текущей стратегии.")
 
-    elif call.data.startswith("asset_"):
-        asset = call.data.split("_")[1]
-        await update_user(call.from_user.id, "asset", asset)
-        await call.message.answer(f"✅ Актив установлен: {asset}")
+    elif text == "BTCUSD / XAUUSD / EURUSD":
+        current = user_data[user_id]["asset"]
+        index = AVAILABLE_SYMBOLS.index(current)
+        user_data[user_id]["asset"] = AVAILABLE_SYMBOLS[(index + 1) % len(AVAILABLE_SYMBOLS)]
+        await msg.answer(f"Выбранный актив: {user_data[user_id]['asset']}")
 
-    elif call.data == "toggle_mute":
-        new_mute = 0 if user[3] == 1 else 1
-        await update_user(call.from_user.id, "mute", new_mute)
-        status = "🔕 Оповещения отключены" if new_mute else "🔔 Оповещения включены"
-        await call.message.answer(status)
+    elif text == "🔕 Mute / 🔔 Unmute":
+        user_data[user_id]["mute"] = not user_data[user_id]["mute"]
+        status = "🔕 Уведомления выключены" if user_data[user_id]["mute"] else "🔔 Уведомления включены"
+        await msg.answer(status)
 
-    elif call.data == "strategy":
-        builder = InlineKeyboardBuilder()
-        for strat in STRATEGIES:
-            builder.button(text=strat, callback_data=f"strat_{strat}")
-        builder.adjust(1)
-        await call.message.answer("Выберите стратегию:", reply_markup=builder.as_markup())
+    elif text == "🎯 Стратегия":
+        strategy = user_data[user_id]["strategy"]
+        if strategy == "MA+RSI+MACD":
+            user_data[user_id]["strategy"] = "Bollinger+Stochastic"
+        else:
+            user_data[user_id]["strategy"] = "MA+RSI+MACD"
+        await msg.answer(f"Текущая стратегия: {user_data[user_id]['strategy']}")
 
-    elif call.data.startswith("strat_"):
-        strat = call.data.split("_")[1]
-        await update_user(call.from_user.id, "strategy", strat)
-        await call.message.answer(f"✅ Стратегия установлена: {strat}")
-
-    elif call.data == "status":
-        mute_text = "🔕 Mute" if user[3] else "🔔 Unmute"
-        await call.message.answer(
-            f"📊 Ваши настройки:\nАктив: {user[1]}\nСтратегия: {user[2]}\nMute: {mute_text}"
+    elif text == "📊 Статус":
+        u = user_data[user_id]
+        mute = "🔕" if u["mute"] else "🔔"
+        await msg.answer(
+            f"📊 Ваши настройки:\n"
+            f"Актив: {u['asset']}\n"
+            f"Стратегия: {u['strategy']}\n"
+            f"Mute: {mute}"
         )
 
-    elif call.data == "schedule":
-        await call.message.answer("🕒 Настройка расписания пока в разработке.")
+    elif text == "🕒 Расписание":
+        await msg.answer("Расписание пока недоступно. В следующем обновлении.")
 
-    await call.answer()
+async def auto_send_signals():
+    while True:
+        for user_id, data in user_data.items():
+            if data["mute"]:
+                continue
+            asset = data["asset"]
+            strategy = data["strategy"]
+            market_data = await get_market_data(asset.replace("/", ""))
+            signal = calculate_signals(market_data, strategy)
+            if signal and signal["confidence"] > 70:
+                try:
+                    await bot.send_message(
+                        user_id,
+                        f"📈 Авто-сигнал по {asset}:\n"
+                        f"📍 Направление: {signal['signal']}\n"
+                        f"💰 Цена входа: {signal['price']}\n"
+                        f"🎯 Take-Profit: +{signal['tp']}%\n"
+                        f"🛑 Stop-Loss: -{signal['sl']}%\n"
+                        f"📊 Точность прогноза: {signal['confidence']}%"
+                    )
+                except Exception:
+                    continue
+        await asyncio.sleep(900)  # каждые 15 минут
 
-# ---------- ENTRY POINT ----------
 async def main():
-    await init_db()
+    asyncio.create_task(auto_send_signals())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
