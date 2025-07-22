@@ -130,7 +130,7 @@ async def handle(msg: types.Message):
 
     if text == "📊 Статус":
         mute = "🔕" if st["mute"] else "🔔"
-        return await msg.answer(f"📊 Настройки:\nАктив: {st['asset']}\nСтратегия: {st['strategy']}\nMute: {mute}")
+        return await msg.answer(f"📊 Настройки:\nАктив: {st['asset']}\nСтратегия: {st['strategy']}\nУведомления: {mute}")
 
     if text == "🕒 Расписание":
         return await msg.answer("🕒 Расписание — скоро будет")
