@@ -9,8 +9,8 @@ from ta.trend import EMAIndicator, ADXIndicator
 from ta.momentum import RSIIndicator
 from ta.volatility import AverageTrueRange
 
-BOT_TOKEN = 'ВАШ_ТОКЕН'
-API_KEY = 'ВАШ_API_KEY'
+BOT_TOKEN = '8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA'
+API_KEY = '5e5e950fa71c416e9ffdb86fce72dc4f'
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
