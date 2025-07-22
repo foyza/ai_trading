@@ -56,7 +56,7 @@ def main_menu(user):
         [InlineKeyboardButton(text="BTCUSD", callback_data="asset_BTC/USD"),
          InlineKeyboardButton(text="XAUUSD", callback_data="asset_XAU/USD"),
          InlineKeyboardButton(text="EURUSD", callback_data="asset_EUR/USD")],
-        [InlineKeyboardButton(text=mute_status, callback_data="toggle_mute")],
+        [InlineKeyboardButton(text="🔕 Mute" if user[3] == 0 else "🔔 Unmute", callback_data="toggle_mute")],
         [InlineKeyboardButton(text="🎯 Стратегия", callback_data="strategy")],
         [InlineKeyboardButton(text="🕒 Расписание", callback_data="schedule")],
         [InlineKeyboardButton(text="📊 Статус", callback_data="status")]
@@ -92,7 +92,7 @@ def mock_signal(data, strategy):
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
     await get_user(message.from_user.id)
-    await message.answer("👋 Пора выбраться из матрицы", reply_markup=main_menu(await get_user(message.from_user.id)))
+    await message.answer("Пора выбраться из матрицы", reply_markup=main_menu(await get_user(message.from_user.id)))
 
 @dp.callback_query()
 async def callback_handler(call: types.CallbackQuery):
