@@ -115,7 +115,7 @@ async def handle(msg: types.Message):
             f"📊 Ваши настройки:\n"
             f"Актив: {symbols[settings['asset']]}\n"
             f"Стратегия: {settings['strategy']}\n"
-            f"Mute: {mute_status}"
+            f"Звук: {mute_status}"
         )
 
 async def auto_signals():
