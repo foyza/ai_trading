@@ -28,7 +28,7 @@ def get_main_keyboard():
         [KeyboardButton(text="🕒 Расписание")],
         [KeyboardButton(text="📊 Статус")]
     ]
-    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 async def fetch_data(symbol):
     params = {
