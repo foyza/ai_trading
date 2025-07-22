@@ -1,168 +1,160 @@
-import asyncio
-import httpx
+import asyncio, httpx
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from aiogram.filters import CommandStart
 from datetime import datetime
 import pandas as pd
-import ta
+import numpy as np
+from ta.trend import EMAIndicator, ADXIndicator
+from ta.momentum import RSIIndicator
+from ta.volatility import AverageTrueRange
 
-BOT_TOKEN = '8102268947:AAH24VSlY8LbGDJcXmlBstmdjLt1AmH2CBA'
-API_KEY = '5e5e950fa71c416e9ffdb86fce72dc4f'
-symbols = ["BTC/USD", "XAU/USD", "EUR/USD"]
-strategies = ["MA+RSI+MACD", "Bollinger+Stochastic", "ADX+EMA", "Breakout+Volume", "PriceAction", "All"]
-
-user_settings = {}
-
-# Telegram bot setup
-bot = Bot(token=BOT_TOKEN)
+BOT_TOKEN = 'ВАШ_ТОКЕН'
+API_KEY = 'ВАШ_API_KEY'
+bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="🔄 Получить сигнал")],
-        [KeyboardButton(text="BTC/USD"), KeyboardButton(text="XAU/USD"), KeyboardButton(text="EUR/USD")],
-        [KeyboardButton(text="🎯 Стратегия"), KeyboardButton(text="🔕 / 🔔")]
-    ],
-    resize_keyboard=True
-)
+user_settings = {}
+symbols = ["BTC/USD", "XAU/USD", "EUR/USD"]
+strategies = ["EMA+ADX+RSI"]
 
-COMMISSION_PCT = 0.04
-SPREAD_PCT = 0.03
+def get_main_keyboard():
+    buttons = [
+        [KeyboardButton(text="🔄 Получить сигнал")],
+        [KeyboardButton(text=s.replace("/", "") ) for s in symbols],
+        [KeyboardButton(text="🔕 Mute"), KeyboardButton(text="🔔 Unmute")],
+        [KeyboardButton(text="🎯 Стратегия")],
+        [KeyboardButton(text="🕒 Расписание")],
+        [KeyboardButton(text="📊 Статус")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+async def fetch_data(symbol, interval="15min", size=100):
+    params = {"symbol": symbol, "interval": interval, "outputsize": size, "apikey": API_KEY}
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get("https://api.twelvedata.com/time_series", params=params)
+    return r.json()
 
 def is_doji(candle):
     body = abs(float(candle["open"]) - float(candle["close"]))
-    total = float(candle["high"]) - float(candle["low"])
-    return total > 0 and (body / total) < 0.1
+    range_ = float(candle["high"]) - float(candle["low"])
+    return body < 0.1 * range_
 
-def is_overbought_oversold(rsi):
-    return rsi > 75 or rsi < 25
-
-def apply_indicators(df):
-    df = df.copy()
-    for col in ["open", "high", "low", "close", "volume"]:
+def preprocess(data):
+    df = pd.DataFrame(data["values"])
+    df = df.iloc[::-1].copy()
+    for col in ['open', 'high', 'low', 'close']:
         df[col] = df[col].astype(float)
-    df = df[::-1]
-
-    df["ema20"] = ta.trend.ema_indicator(df["close"], window=20)
-    df["ema50"] = ta.trend.ema_indicator(df["close"], window=50)
-    df["adx"] = ta.trend.adx(df["high"], df["low"], df["close"], window=14)
-    df["rsi"] = ta.momentum.rsi(df["close"], window=14)
-    df["atr"] = ta.volatility.average_true_range(df["high"], df["low"], df["close"], window=14)
     return df
 
-def analyze(data_15m, data_1h, strategy):
-    if "values" not in data_15m or "values" not in data_1h:
-        return {"error": "Недостаточно данных"}
+def analyze_combined(m15, h1):
+    df_m15 = preprocess(m15)
+    df_h1 = preprocess(h1)
 
-    df_15 = pd.DataFrame(data_15m["values"])
-    df_1h = pd.DataFrame(data_1h["values"])
-    df_15 = apply_indicators(df_15)
-    df_1h = apply_indicators(df_1h)
+    df = df_m15.copy()
+    df["ema"] = EMAIndicator(df["close"], window=20).ema_indicator()
+    df["adx"] = ADXIndicator(df["high"], df["low"], df["close"]).adx()
+    df["rsi"] = RSIIndicator(df["close"]).rsi()
+    df["atr"] = AverageTrueRange(df["high"], df["low"], df["close"]).average_true_range()
 
-    last_15 = df_15.iloc[-1]
-    last_1h = df_1h.iloc[-1]
+    latest = df.iloc[-1]
 
-    if is_doji(data_15m["values"][0]):
-        return {"error": "Doji свеча"}
-    if is_overbought_oversold(last_15["rsi"]):
-        return {"error": "RSI в зоне перекупленности/перепроданности"}
+    if latest["adx"] < 20: return {"error": "Рынок слабый (ADX < 20)"}
+    if latest["rsi"] > 70 or latest["rsi"] < 30: return {"error": "Рынок перегрет (RSI)"}
+    if is_doji(m15["values"][0]): return {"error": "Формация Doji — сигнал пропущен"}
 
-    ema_signal = "Buy" if last_15["ema20"] > last_15["ema50"] else "Sell"
-    adx_ok = last_15["adx"] > 20 and last_1h["adx"] > 20
+    trend = "up" if latest["close"] > latest["ema"] else "down"
+    signal = "Buy" if trend == "up" else "Sell"
+    price = latest["close"]
+    atr = latest["atr"]
+    tp_pct = round(atr / price * 100 * 2, 2)
+    sl_pct = round(atr / price * 100, 2)
+    confidence = 80 + (5 if trend == "up" else 0)
+    return {"signal": signal, "price": price, "tp_pct": tp_pct, "sl_pct": sl_pct, "confidence": confidence}
 
-    signal = ema_signal if adx_ok else "Hold"
-    if signal == "Hold":
-        return {"error": "ADX слабый"}
-
-    price = float(data_15m["values"][0]["close"])
-    atr = last_15["atr"]
-    tp_pct = atr / price * 100 * 1.5 - COMMISSION_PCT
-    sl_pct = atr / price * 100 + SPREAD_PCT + COMMISSION_PCT
-
-    confidence = 75 if strategy != "All" else 85
-
-    return {
-        "signal": signal,
-        "confidence": confidence,
-        "tp_pct": round(tp_pct, 2),
-        "sl_pct": round(sl_pct, 2),
-        "price": price
-    }
-
-async def fetch_data(symbol, interval):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol.replace('/', '')}&interval={interval}&outputsize=50&apikey={API_KEY}"
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url)
-        return resp.json()
+def calc_levels(price, tp_pct, sl_pct, direction, spread=0.01, commission=0.02):
+    adjust = (spread + commission) / 100
+    if direction == "Buy":
+        tp = round(price * (1 + tp_pct/100 - adjust), 4)
+        sl = round(price * (1 - sl_pct/100 - adjust), 4)
+    else:
+        tp = round(price * (1 - tp_pct/100 + adjust), 4)
+        sl = round(price * (1 + sl_pct/100 + adjust), 4)
+    return tp, sl
 
 @dp.message(CommandStart())
 async def cmd_start(msg: types.Message):
     uid = msg.from_user.id
-    user_settings[uid] = {
-        "asset": symbols[0],
-        "mute": False,
-        "strategy": strategies[0],
-        "schedule": []
-    }
-    await msg.answer("Пора выбраться из матрицы!", reply_markup=keyboard)
+    user_settings[uid] = {"asset": symbols[0], "mute": False, "strategy": strategies[0], "schedule": []}
+    await msg.answer("Пора выбраться из матрицы", reply_markup=get_main_keyboard())
 
 @dp.message()
-async def handle_msg(msg: types.Message):
+async def handle(msg: types.Message):
     uid = msg.from_user.id
-    st = user_settings.get(uid)
-    if not st:
-        return await msg.answer("Используй /start сначала")
-
     text = msg.text
-    if text in symbols:
-        st["asset"] = text
-        return await msg.answer(f"Актив: {text}")
-    elif text == "🔄 Получить сигнал":
-        data_15m = await fetch_data(st["asset"], "15min")
-        data_1h = await fetch_data(st["asset"], "1h")
-        res = analyze(data_15m, data_1h, st["strategy"])
+    if uid not in user_settings:
+        await cmd_start(msg)
+        return
+    st = user_settings[uid]
+
+    if text == "🔄 Получить сигнал":
+        m15 = await fetch_data(st["asset"], "15min")
+        h1 = await fetch_data(st["asset"], "1h")
+        res = analyze_combined(m15, h1)
         if "error" in res:
             return await msg.answer(f"⚠️ {res['error']}")
-        msg_text = (
-            f"📊 {st['asset']} — {res['signal']} сигнал"
-            f"🎯 Уверенность: {res['confidence']}%"
-            f"💰 Цена: {res['price']}$"
-            f"🎯 TP: {res['tp_pct']}%"
-            f"🛑 SL: {res['sl_pct']}%"
+        tp, sl = calc_levels(res["price"], res["tp_pct"], res["sl_pct"], res["signal"])
+        return await msg.answer(
+            f"📈 Сигнал по {st['asset']}:\n"
+            f"📍 {res['signal']}\n"
+            f"💰 Вход: {res['price']}\n"
+            f"🎯 TP +{res['tp_pct']}% → {tp}\n"
+            f"🛑 SL -{res['sl_pct']}% → {sl}\n"
+            f"📊 Точность: {res['confidence']}%"
         )
-        return await msg.answer(msg_text)
-    elif text == "🔕 / 🔔":
-        st["mute"] = not st["mute"]
-        return await msg.answer("🔕 Оповещения отключены" if st["mute"] else "🔔 Оповещения включены")
-    elif text == "🎯 Стратегия":
-        current = strategies.index(st["strategy"])
-        st["strategy"] = strategies[(current + 1) % len(strategies)]
-        return await msg.answer(f"Стратегия: {st['strategy']}")
-    else:
-        return await msg.answer("Выберите опцию с клавиатуры")
 
-async def auto_signals():
+    if text in [s.replace("/", "") for s in symbols]:
+        st["asset"] = f"{text[:3]}/{text[3:]}"
+        return await msg.answer(f"✅ Актив: {st['asset']}")
+
+    if text == "🔕 Mute":
+        st["mute"] = True
+        return await msg.answer("🔕 Уведомления отключены")
+    if text == "🔔 Unmute":
+        st["mute"] = False
+        return await msg.answer("🔔 Уведомления включены")
+
+    if text == "🎯 Стратегия":
+        st["strategy"] = strategies[0]
+        return await msg.answer(f"🎯 Стратегия: {st['strategy']}")
+
+    if text == "📊 Статус":
+        mute = "🔕" if st["mute"] else "🔔"
+        return await msg.answer(f"📊 Настройки:\nАктив: {st['asset']}\nСтратегия: {st['strategy']}\nMute: {mute}")
+
+    if text == "🕒 Расписание":
+        return await msg.answer("🕒 Расписание — скоро будет")
+
+async def auto_signal_loop():
     while True:
         for uid, st in user_settings.items():
-            if st["mute"]:
-                continue
-            data_15m = await fetch_data(st["asset"], "15min")
-            data_1h = await fetch_data(st["asset"], "1h")
-            res = analyze(data_15m, data_1h, st["strategy"])
-            if "error" not in res and res["confidence"] >= 70:
-                msg_text = (
-                    f"📊 [AUTO] {st['asset']} — {res['signal']} сигнал"
-                    f"🎯 Уверенность: {res['confidence']}%"
-                    f"💰 Цена: {res['price']}$"
-                    f"🎯 TP: {res['tp_pct']}%"
-                    f"🛑 SL: {res['sl_pct']}%"
-                )
-                await bot.send_message(uid, msg_text)
-        await asyncio.sleep(900)  # каждые 15 минут
+            if st["mute"]: continue
+            m15 = await fetch_data(st["asset"], "15min")
+            h1 = await fetch_data(st["asset"], "1h")
+            res = analyze_combined(m15, h1)
+            if "error" in res or res["confidence"] < 70: continue
+            tp, sl = calc_levels(res["price"], res["tp_pct"], res["sl_pct"], res["signal"])
+            await bot.send_message(uid,
+                f"📢 Автосигнал по {st['asset']}:\n"
+                f"📍 {res['signal']} @ {res['price']}\n"
+                f"🎯 TP +{res['tp_pct']}% → {tp}\n"
+                f"🛑 SL -{res['sl_pct']}% → {sl}\n"
+                f"📊 Точность: {res['confidence']}%"
+            )
+        await asyncio.sleep(900)
 
 async def main():
-    asyncio.create_task(auto_signals())
+    asyncio.create_task(auto_signal_loop())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
