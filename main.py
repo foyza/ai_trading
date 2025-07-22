@@ -14,9 +14,9 @@ dp = Dispatcher()
 user_settings = {}
 
 symbols = {
-    "BTCUSD": "BTC/USD",
-    "XAUUSD": "XAU/USD",
-    "EURUSD": "EUR/USD"
+    "BTC/USD": "BTC/USD",
+    "XAU/USD": "XAU/USD",
+    "EUR/USD": "EUR/USD"
 }
 
 strategies = ["MA+RSI+MACD", "Bollinger+Stochastic"]
@@ -24,7 +24,7 @@ strategies = ["MA+RSI+MACD", "Bollinger+Stochastic"]
 keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🔄 Получить сигнал")],
-        [KeyboardButton(text="BTCUSD"), KeyboardButton(text="XAUUSD"), KeyboardButton(text="EURUSD")],
+        [KeyboardButton(text="BTC/USD"), KeyboardButton(text="XAU/USD"), KeyboardButton(text="EUR/USD")],
         [KeyboardButton(text="🔕 Mute"), KeyboardButton(text="🔔 Unmute")],
         [KeyboardButton(text="🎯 Стратегия")],
         [KeyboardButton(text="🕒 Расписание")],
