@@ -21,12 +21,12 @@ strategies = ["MA+RSI+MACD", "Bollinger+Stochastic"]
 
 def get_main_keyboard():
     buttons = [
-        [KeyboardButton("🔄 Получить сигнал")],
+        [KeyboardButton(text="🔄 Получить сигнал")],
         [KeyboardButton(s.split("/")[0] + "USD") for s in symbols],
-        [KeyboardButton("🔕 Mute"), KeyboardButton("🔔 Unmute")],
-        [KeyboardButton("🎯 Стратегия")],
-        [KeyboardButton("🕒 Расписание")],
-        [KeyboardButton("📊 Статус")]
+        [KeyboardButton(text="🔕 Mute"), KeyboardButton(text="🔔 Unmute")],
+        [KeyboardButton(text="🎯 Стратегия")],
+        [KeyboardButton(text="🕒 Расписание")],
+        [KeyboardButton(text="📊 Статус")]
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
